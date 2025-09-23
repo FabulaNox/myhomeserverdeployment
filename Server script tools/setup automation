@@ -1,4 +1,11 @@
-!#/bin/bash
+#!/bin/bash
+
+set -e
+
+trap 'err_line=$LINENO; \
+echo "Error occurred at line $err_line. Opening a new terminal for remaining steps."; \
+gnome-terminal -- bash -c "echo \"Continuing setup from line $err_line...\"; tail -n +$err_line \"$0\" | bash"; \
+exit 1' ERR
 #First update
 echo "Updating system, will be prompted for password"
 sudo apt update && sudo apt upgrade -y
@@ -6,8 +13,8 @@ sudo apt update && sudo apt upgrade -y
 echo "Installing and pre-configuring UFW"
 sudo apt install -y ufw
 sudo ufw enable
-sudo ufw deny incoming
-sudo ufw allow outgoing
+sudo ufw default deny incoming 
+sudo ufw default allow outgoing
 sudo ufw allow OpenSSH
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
@@ -45,10 +52,10 @@ echo "Adding OpenSSH server"
 sudo apt update
 sudo apt install -y openssh-server
 #Base tool deployment
-echo "Installing and deploying Ngnix"
+echo "Installing and deploying Nginx"
 sudo apt install -y nginx
 sudo systemctl enable nginx --now
-echo "Ngnix added and running"
+echo "Nginx added and running"
 #brute force protection
 echo "Adding fail2ban"
 sudo apt install -y fail2ban
@@ -59,4 +66,4 @@ sudo apt install -y chrony
 sudo systemctl enable --now chrony
 sudo chronyc tracking
 #review dependencies
-sudo apt update && sudo apt upgrade && sudo apt --autoremove
+sudo apt update && sudo apt upgrade -y && sudo apt --autoremove -y
