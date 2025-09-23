@@ -58,3 +58,5 @@ echo "Installing time sync tools for auth"
 sudo apt install -y chrony
 sudo systemctl enable --now chrony
 sudo chronyc tracking
+#review dependencies
+sudo apt update && sudo apt upgrade && sudo apt --autoremove
