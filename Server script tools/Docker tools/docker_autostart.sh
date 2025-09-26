@@ -48,9 +48,10 @@ Restart=always
 User=root
 
 [Install]
-WantedBy=multi-user.target" | sudo tee /etc/systemd/system/docker-autostart.service > /dev/null
+WantedBy=multi-user.target | sudo tee /etc/systemd/system/docker-autostart.service > /dev/null
 if [ ! -f "$SYSTEMD_SERVICE" ]; then
-    echo "[Unit]
+    echo \
+[Unit]
 Description=Docker Autostart - Save and restore running containers
 Requires=docker.service
 
@@ -60,7 +61,7 @@ Restart=always
 User=root
 
 [Install]
-WantedBy=multi-user.target" | sudo tee "$SYSTEMD_SERVICE" > /dev/null
+WantedBy=multi-user.target | sudo tee "$SYSTEMD_SERVICE" > /dev/null
     sudo systemctl daemon-reload
     sudo systemctl enable docker-autostart.service
     sudo systemctl start docker-autostart.service
