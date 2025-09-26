@@ -130,6 +130,15 @@ cleanup()
 
 #trap exit for cleanup
 trap cleanup EXIT SIGTERM SIGINT SIGHUP
+# Debug mode: skip persistent loop and background listeners for clean validation
+if [ "$DEBUG_MODE" = "1" ]; then
+    echo "[DEBUG] Debug mode enabled: skipping event listeners and infinite loop."
+    update_c_list
+    start_saved_containers
+    check_container_health
+    echo "[DEBUG] Clean run complete. Exiting."
+    exit 0
+fi
 
 #set up the systemd service only if missing
 if [ ! -f "$SYSTEMD_SERVICE" ]; then
@@ -188,7 +197,20 @@ start_saved_containers()
         image=$(jq -r '.[0].Config.Image' "$config_file")
         # Check if container exists
         if ! docker ps -a --format '{{.Names}}' | grep -q "^$container_name$"; then
-            # Build docker run args: only name, ports, image
+            # Clean up any containers using the same ports
+            for port in $(jq -r '.[0].HostConfig.PortBindings | keys[]?' "$config_file"); do
+                host_port=$(jq -r ".[0].HostConfig.PortBindings[\"$port\"][0].HostPort" "$config_file")
+                if [ -n "$host_port" ]; then
+                    # Find containers using this port and remove them
+                    conflict_containers=$(docker ps -q --filter "publish=$host_port")
+                    for c in $conflict_containers; do
+                        cname=$(docker inspect --format='{{.Name}}' "$c" | sed 's/^\///')
+                        echo "[DEBUG] Removing conflicting container $cname ($c) using port $host_port" >> "$ERROR_LOG"
+                        docker rm -f "$c" 2>>"$ERROR_LOG"
+                    done
+                fi
+            done
+            # Build docker run args: name, ports, env, image
             args=(run -d --name "$container_name")
             echo "[DEBUG] Config file $config_file contents:" >> "$ERROR_LOG"
             cat "$config_file" >> "$ERROR_LOG"
@@ -199,6 +221,13 @@ start_saved_containers()
                     args+=( -p "$host_port:$port" )
                 fi
             done
+            # Add environment variables if present
+            envs=$(jq -r '.[0].Config.Env[]?' "$config_file")
+            if [ -n "$envs" ]; then
+                while IFS= read -r env; do
+                    args+=( -e "$env" )
+                done <<< "$envs"
+            fi
             if [ -n "$image" ]; then
                 args+=( "$image" )
                 echo "[DEBUG] Final docker command: docker ${args[@]}" >> "$ERROR_LOG"
@@ -256,7 +285,7 @@ check_container_health() {
     for container in $(docker ps -q); do
         # Validate container ID before inspecting
         if [[ "$container" =~ ^[a-zA-Z0-9]+$ ]]; then
-            health=$(docker inspect --format='{{.State.Health.Status}}' "$container" 2>>"$ERROR_LOG")
+            health=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}N/A{{end}}' "$container" 2>>"$ERROR_LOG")
             if [ $? -ne 0 ]; then
                 echo "[$(date)] Error inspecting health for container $container" >> "$ERROR_LOG"
                 xdg-open "$ERROR_LOG" &
@@ -274,7 +303,29 @@ check_container_health() {
     done
 }
 
-# Persistent main loop to keep service alive
-while true; do
-    sleep 60
-done
+# Debug mode: skip persistent loop and background listeners for clean validation
+if [ "$DEBUG_MODE" = "1" ]; then
+    echo "[DEBUG] Debug mode enabled: skipping event listeners and infinite loop."
+    update_c_list
+    start_saved_containers
+    check_container_health
+    echo "[DEBUG] Clean run complete. Exiting."
+    exit 0
+else
+    # Immediately update container list and start any saved containers
+    update_c_list
+    start_saved_containers
+    #listen for Docker events and update the list
+    docker events --filter 'event=start' --filter 'event=stop' --format '{{.Status}}' | while read -r event; do
+        update_c_list
+    done &
+    #listen for Docker health_status events
+    docker events --filter 'event=health_status' --format '{{.Actor.Attributes.name}}: {{.Status}}' | while read -r health_event; do
+        echo "[HEALTH EVENT] $health_event" >> "$HEALTH_LOG"
+    done &
+    #periodically check health status of running containers
+    while true; do
+        check_container_health
+        sleep 60
+    done
+fi

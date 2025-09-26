@@ -3,9 +3,6 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# Source config for all paths
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="$SCRIPT_DIR/docker_autostart.conf"
 if [ -r "$CONFIG_FILE" ]; then
     . "$CONFIG_FILE"
@@ -13,46 +10,13 @@ else
     echo "[ERROR] Config file not found: $CONFIG_FILE" >&2; exit 2
 fi
 
-# Restore containers from config before starting service
-restore_containers() {
-    CONFIG_BACKUP_DIR="$AUTOSCRIPT_DIR/container_configs"
-    mkdir -p "$CONFIG_BACKUP_DIR"
-    for config_file in "$CONFIG_BACKUP_DIR"/*.json; do
-        [ -e "$config_file" ] || continue
-        container_name=$(jq -r '.[0].Name' "$config_file" | sed 's/^\///')
-        image=$(jq -r '.[0].Config.Image' "$config_file")
-        if ! docker ps -a --format '{{.Names}}' | grep -q "^$container_name$"; then
-            args=(run -d --name "$container_name")
-            for port in $(jq -r '.[0].HostConfig.PortBindings | keys[]?' "$config_file"); do
-                host_port=$(jq -r ".[0].HostConfig.PortBindings[\"$port\"][0].HostPort" "$config_file")
-                if [ -n "$host_port" ]; then
-                    echo "[DEBUG] Adding port mapping: $host_port:$port" >> "$ERROR_LOG"
-                    args+=( -p "$host_port:$port" )
-                fi
-            done
-            if [ -n "$image" ]; then
-                args+=( "$image" )
-                echo "[DEBUG] Final docker command: docker ${args[@]}" >> "$ERROR_LOG"
-                for idx in "${!args[@]}"; do
-                    echo "[DEBUG] args[$idx]: '${args[$idx]}'" >> "$ERROR_LOG"
-                done
-                docker "${args[@]}" 2>>"$ERROR_LOG"
-            else
-                echo "[$(date)] Skipped container $container_name: missing image name" >> "$ERROR_LOG"
-            fi
-        else
-            docker start "$container_name" 2>>"$ERROR_LOG"
-        fi
-    done
-}
+# Use config variables for all paths
+CONFIG_BACKUP_DIR="$SCRIPT_DIR/container_configs"
+# ERROR_LOG, SYSTEMD_SERVICE, BIN_PATH, LOCKFILE, etc. are now sourced from .conf
+LOCKFILE_SCRIPT="$LOCKFILE"
 
-# Paths
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AUTOSTART_SCRIPT="$SCRIPT_DIR/docker_autostart.sh"
-DEPLOY_SCRIPT="$SCRIPT_DIR/deploy_docker_autostart.sh"
-CONFIG_FILE="$SCRIPT_DIR/docker_autostart.conf"
-LOCKFILE_SCRIPT="$SCRIPT_DIR/lockfile.sh"
-SERVICE_FILE="/etc/systemd/system/docker-autostart.service"
+
+# Paths from config
 
 # Ensure root
 if [ "$EUID" -ne 0 ]; then
@@ -128,9 +92,12 @@ systemctl daemon-reload
 systemctl enable docker_autostart_bootstrap.service
 systemctl enable docker-autostart.service
 
-# Restore containers before starting main service
-restore_containers
-systemctl start docker-autostart.service
+if [ "$DEBUG_MODE" = "1" ]; then
+    systemctl stop docker-autostart.service
+    DEBUG_MODE=1 $AUTOSTART_SCRIPT
+else
+    systemctl start docker-autostart.service
+fi
 
 sleep 2
 
