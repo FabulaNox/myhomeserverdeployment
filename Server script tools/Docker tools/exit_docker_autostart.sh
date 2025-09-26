@@ -1,5 +1,5 @@
 #!/bin/bash
-# Automated cleanup for docker_autostart service and related files
+# Automated cleanup for docker-autostart service and related files
 # Usage: sudo exit docker_autostart
 
 set -e
@@ -16,4 +16,4 @@ sudo rm -f /usr/autoscript/*.log /usr/autoscript/*.lock /usr/autoscript/running_
 # Confirm cleanup
 ls -l /usr/autoscript
 
-echo "[SUCCESS] docker_autostart service stopped and all related files cleaned up."
+echo "[SUCCESS] docker-autostart.service stopped and all related files cleaned up."

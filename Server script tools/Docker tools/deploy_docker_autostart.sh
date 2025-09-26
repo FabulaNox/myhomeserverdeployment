@@ -32,8 +32,10 @@ echo "[INFO] Autoscript directory ensured at $AUTOSCRIPT_DIR"
 # 3. Update BIN_PATH in config if script was moved (optional, handled by config)
 # (No action needed unless user wants to change BIN_PATH)
 
-# 4. Restart systemd service after changes
+
+# 4. Ensure systemd unit file has correct ExecStart path
 if [ -f "$SYSTEMD_SERVICE" ]; then
+    sed -i 's|ExecStart=.*|ExecStart=/bin/bash /usr/local/bin/docker_autostart.sh|' "$SYSTEMD_SERVICE"
     systemctl daemon-reload
     systemctl restart docker-autostart.service
     echo "[INFO] Systemd service restarted."
