@@ -180,36 +180,48 @@ update_c_list() {
 #function to start saving containers
 start_saved_containers() 
 {
-while read -r container; do
-    if [[ "$container" =~ ^[a-zA-Z0-9]+$ ]]; then
-        if ! docker start "$container" 2>>"$ERROR_LOG"; then
-            clean_old_logs
-            echo "[$(date)] Error starting container $container. Dropping container." >> "$ERROR_LOG"
-            echo "$container" >> "$DROPPED_CONTAINERS_LIST"
-            open_error_log_once
-            check_error_rate
-            docker rm -f "$container" 2>>"$ERROR_LOG"
+    CONFIG_BACKUP_DIR="$AUTOSCRIPT_DIR/container_configs"
+    # Restore containers from config if not present
+    for config_file in "$CONFIG_BACKUP_DIR"/*.json; do
+        [ -e "$config_file" ] || continue
+        container_name=$(jq -r '.[0].Name' "$config_file" | sed 's/^\///')
+        image=$(jq -r '.[0].Config.Image' "$config_file")
+        # Check if container exists
+        if ! docker ps -a --format '{{.Names}}' | grep -q "^$container_name$"; then
+            # Build docker run args: only name, ports, image
+            args=(run -d --name "$container_name")
+            echo "[DEBUG] Config file $config_file contents:" >> "$ERROR_LOG"
+            cat "$config_file" >> "$ERROR_LOG"
+            for port in $(jq -r '.[0].HostConfig.PortBindings | keys[]?' "$config_file"); do
+                host_port=$(jq -r ".[0].HostConfig.PortBindings[\"$port\"][0].HostPort" "$config_file")
+                if [ -n "$host_port" ]; then
+                    echo "[DEBUG] Adding port mapping: $host_port:$port" >> "$ERROR_LOG"
+                    args+=( -p "$host_port:$port" )
+                fi
+            done
+            if [ -n "$image" ]; then
+                args+=( "$image" )
+                echo "[DEBUG] Final docker command: docker ${args[@]}" >> "$ERROR_LOG"
+                for idx in "${!args[@]}"; do
+                    echo "[DEBUG] args[$idx]: '${args[$idx]}'" >> "$ERROR_LOG"
+                done
+                docker "${args[@]}" 2>>"$ERROR_LOG"
+            else
+                echo "[$(date)] Skipped container $container_name: missing image name" >> "$ERROR_LOG"
+            fi
+        else
+            docker start "$container_name" 2>>"$ERROR_LOG"
         fi
-    clean_old_logs
-    else
-        clean_old_logs
-    echo "[$(date)] Invalid container ID: $container" >> "$ERROR_LOG"
-    open_error_log_once
-        check_error_rate
-    fi
-done < "$c_list"
-        if [ -s "$DROPPED_CONTAINERS_LIST" ]; then
-            echo "The following containers were dropped due to start failure:"
-            cat "$DROPPED_CONTAINERS_LIST"
-        fi
+    done
 }
 #handle shutdown
 save_containers() 
 {
     update_c_list
-    # Save images of running containers before exit
+    # Save images and config of running containers before exit
     IMAGE_BACKUP_DIR="$AUTOSCRIPT_DIR/image_backups"
-    mkdir -p "$IMAGE_BACKUP_DIR"
+    CONFIG_BACKUP_DIR="$AUTOSCRIPT_DIR/container_configs"
+    mkdir -p "$IMAGE_BACKUP_DIR" "$CONFIG_BACKUP_DIR"
     for container in $(cat "$CONTAINER_LIST"); do
         if [[ "$container" =~ ^[a-zA-Z0-9]+$ ]]; then
             image=$(docker inspect --format='{{.Config.Image}}' "$container" 2>>"$ERROR_LOG")
@@ -219,6 +231,8 @@ save_containers()
                 docker save "$image" -o "$backup_file" 2>>"$ERROR_LOG"
                 echo "[$(date)] Saved image $image for container $name ($container) to $backup_file" >> "$HEALTH_LOG"
             fi
+            # Save container config
+            docker inspect "$container" > "$CONFIG_BACKUP_DIR/${name}_${container}.json" 2>>"$ERROR_LOG"
         fi
     done
     exit 0
