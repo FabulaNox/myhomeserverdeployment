@@ -262,8 +262,26 @@ save_containers()
 trap save_containers SIGTERM SIGINT SIGHUP
 
 
+wait_for_docker() {
+    local max_wait=300
+    local waited=0
+    local interval=5
+    while ! docker info >/dev/null 2>&1; do
+        echo "[$(date '+%Y-%m-%d_%H-%M-%S')] Waiting for Docker daemon to be available..." | tee -a "$ERROR_LOG"
+        sleep $interval
+        waited=$((waited+interval))
+        if [ $waited -ge $max_wait ]; then
+            echo "[$(date '+%Y-%m-%d_%H-%M-%S')] Docker daemon not available after $max_wait seconds. Giving up." | tee -a "$ERROR_LOG"
+            return 1
+        fi
+    done
+    echo "[$(date '+%Y-%m-%d_%H-%M-%S')] Docker daemon is active." | tee -a "$ERROR_LOG"
+    return 0
+}
+
 # Restore containers from unified JSON backup (only those last known as running)
 if [ -f "$JSON_BACKUP_FILE" ]; then
+    wait_for_docker || exit 4
     loaded=()
     not_loaded=()
     count=$(jq length "$JSON_BACKUP_FILE")
@@ -303,6 +321,25 @@ if [ -f "$JSON_BACKUP_FILE" ]; then
         echo "[RESTORE] $(date): Not loaded containers: ${not_loaded[*]}"
         echo "[RESTORE] Restoration log: $RESTORE_LOG"
     } | tee -a "$RESTORE_LOG"
+fi
+
+# After backup, start a background process to check Docker socket every 2 hours
+start_docker_socket_monitor() {
+    (
+        while true; do
+            if docker info >/dev/null 2>&1; then
+                echo "[$(date '+%Y-%m-%d_%H-%M-%S')] Docker socket is available." >> "$ERROR_LOG"
+            else
+                echo "[$(date '+%Y-%m-%d_%H-%M-%S')] Docker socket is NOT available." >> "$ERROR_LOG"
+            fi
+            sleep 7200
+        done
+    ) &
+}
+
+# Start monitor after backup if not already running
+if [ -f "$JSON_BACKUP_FILE" ]; then
+    start_docker_socket_monitor
 fi
 #listen for Docker events and update the list
 docker events --filter 'event=start' --filter 'event=stop' --format '{{.Status}}' | while read -r event; do
