@@ -1,0 +1,12 @@
+# .gitignore for myhomeserverdeployment
+# Ignore autoscript state, logs, and lockfiles
+/usr/autoscript/
+*.log
+*.lock
+
+# ---
+# Checksum hashes for docker_autostart.sh
+# Place your MD5 and SHA256 hashes below for reference
+# MD5: 
+# SHA256: 
+# ---
