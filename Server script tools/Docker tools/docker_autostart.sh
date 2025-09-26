@@ -12,10 +12,10 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/docker_autostart.conf"
 . "$SCRIPT_DIR/lockfile.sh"
-    #Script start
+#lockfile path
+ # LOCKFILE is sourced from config
+#Script start
 #identify the script process ID and avoid duplicates
-    #lockfile path
-        LOCKFILE="/usr/autoscript/docker_autostart.lock"
 
     #acquire lock, exit if already running
     if ! acquire_lock "$LOCKFILE"; then
@@ -36,13 +36,10 @@ cleanup()
 #trap exit for cleanup
 trap cleanup EXIT SIGTERM SIGINT SIGHUP
 #create directory to store container list and set permission
-    sudo mkdir -p /usr/autoscript
-    sudo chmod 700 /usr/autoscript
+sudo mkdir -p "$AUTOSCRIPT_DIR"
+sudo chmod 700 "$AUTOSCRIPT_DIR"
 #set up the systemd service
-    echo \
-    "[Unit]
 Description=Docker Autostart - Save and restore running containers
-         release_lock "$LOCKFILE"
 Requires=docker.service
 
 [Service]
@@ -52,7 +49,18 @@ User=root
 
 [Install]
 WantedBy=multi-user.target" | sudo tee /etc/systemd/system/docker-autostart.service > /dev/null
-#starts the service and enables it to start on boot
+if [ ! -f "$SYSTEMD_SERVICE" ]; then
+    echo "[Unit]
+Description=Docker Autostart - Save and restore running containers
+Requires=docker.service
+
+[Service]
+ExecStart=$BIN_PATH
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target" | sudo tee "$SYSTEMD_SERVICE" > /dev/null
     sudo systemctl daemon-reload
     sudo systemctl enable docker-autostart.service
     sudo systemctl start docker-autostart.service
@@ -80,7 +88,7 @@ while read -r container; do
             xdg-open "$ERROR_LOG" &
             check_error_rate
         fi
-        clean_old_logs
+    clean_old_logs
     else
         clean_old_logs
         echo "[$(date)] Invalid container ID: $container" >> "$ERROR_LOG"
@@ -99,7 +107,7 @@ save_containers()
 }
 #catch shutdown/restart signal
 trap save_containers SIGTERM SIGINT SIGHUP
-                            if ! docker start "$container" 2>>"$ERROR_LOG"; then
+if ! docker start "$container" 2>>"$ERROR_LOG"; then
 start_saved_containers
 #listen for Docker events and update the list
 docker events --filter 'event=start' --filter 'event=stop' --format '{{.Status}}' | while read -r event; do
@@ -107,24 +115,24 @@ docker events --filter 'event=start' --filter 'event=stop' --format '{{.Status}}
                          echo "[$(date)] Invalid container ID: $container" >> "$ERROR_LOG"
 #listen for Docker health_status events
 docker events --filter 'event=health_status' --format '{{.Actor.Attributes.name}}: {{.Status}}' | while read -r health_event; do
-    echo "[HEALTH EVENT] $health_event" >> /usr/autoscript/container_health.log
 done &
 #periodically check health status of running containers
 check_container_health() {
     for container in $(docker ps -q); do
         # Validate container ID before inspecting
-        if [[ "$container" =~ ^[a-zA-Z0-9]+$ ]]; then
+start_saved_containers
             health=$(docker inspect --format='{{.State.Health.Status}}' "$container" 2>>"$ERROR_LOG")
             if [ $? -ne 0 ]; then
                 echo "[$(date)] Error inspecting health for container $container" >> "$ERROR_LOG"
                 xdg-open "$ERROR_LOG" &
             fi
             name=$(docker inspect --format='{{.Name}}' "$container" 2>>"$ERROR_LOG" | sed 's/^\///')
+    echo "[HEALTH EVENT] $health_event" >> "$HEALTH_LOG"
             if [ $? -ne 0 ]; then
                 echo "[$(date)] Error inspecting name for container $container" >> "$ERROR_LOG"
                 xdg-open "$ERROR_LOG" &
             fi
-            echo "$(date): $name ($container) health: $health" >> /usr/autoscript/container_health.log
+            echo "$(date): $name ($container) health: $health" >> "$HEALTH_LOG"
         else
             echo "[$(date)] Invalid container ID in health check: $container" >> "$ERROR_LOG"
             xdg-open "$ERROR_LOG" &
