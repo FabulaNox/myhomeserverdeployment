@@ -1,3 +1,7 @@
+# Persistent Docker backup JSON
+/usr/autoscript/container_details.json
+# Backup tarballs
+/home/bogdan/project0/myhomeserverdeployment/Server script tools/Docker tools/backup_pre_migration_*.tar.gz
 # .gitignore for myhomeserverdeployment
 # Ignore autoscript state, logs, and lockfiles
 /usr/autoscript/

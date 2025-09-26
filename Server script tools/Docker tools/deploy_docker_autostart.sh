@@ -22,13 +22,18 @@ CONFIG_DST="$BIN_DIR/docker_autostart.conf"
 LOCKFILE_DST="$BIN_DIR/lockfile.sh"
 SCRIPT_DST="$BIN_DIR/docker_autostart.sh"
 
-# 1. Copy config and lockfile to /usr/local/bin
+
+# 1. Copy config, lockfile, main, and backup script to /usr/local/bin
 install -m 644 "$CONFIG_SRC" "$CONFIG_DST"
 echo "[INFO] Config file copied to $CONFIG_DST"
 install -m 644 "$LOCKFILE_SRC" "$LOCKFILE_DST"
 echo "[INFO] Lockfile script copied to $LOCKFILE_DST"
 install -m 700 "$SCRIPT_SRC_FILE" "$SCRIPT_DST"
 echo "[INFO] Main script copied to $SCRIPT_DST"
+BACKUP_SCRIPT_SRC="$SCRIPT_SRC/docker_backup_automated.sh"
+BACKUP_SCRIPT_DST="$BIN_DIR/docker_backup_automated.sh"
+install -m 700 "$BACKUP_SCRIPT_SRC" "$BACKUP_SCRIPT_DST"
+echo "[INFO] Backup script copied to $BACKUP_SCRIPT_DST"
 
 
 # 2. Ensure all referenced directories exist and are writable
