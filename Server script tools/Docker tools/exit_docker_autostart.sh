@@ -8,7 +8,7 @@ set -e
 systemctl stop docker-autostart.service
 
 # Remove all files in /usr/autoscript (except config)
-rm -f /usr/autoscript/*.log /usr/autoscript/*.lock /usr/autoscript/running_containers.txt /usr/autoscript/dropped_containers.txt
+sudo rm -f /usr/autoscript/*.log /usr/autoscript/*.lock /usr/autoscript/running_containers.txt /usr/autoscript/dropped_containers.txt
 
 # Optionally remove test containers (uncomment if desired)
 # docker rm -f test_autostart_container
