@@ -30,6 +30,10 @@ if [ ! -r "$CONFIG_FILE" ]; then
 fi
 if [ ! -r "$LOCKFILE_SCRIPT" ]; then
     echo "[ERROR] Lockfile script $LOCKFILE_SCRIPT not found or not readable. Exiting in 10 seconds..." >&2
+
+# Ensure autoscript directory exists before any lockfile or log operations
+sudo mkdir -p "$AUTOSCRIPT_DIR"
+sudo chmod 700 "$AUTOSCRIPT_DIR"
     sleep 10
     exit 2
 fi
