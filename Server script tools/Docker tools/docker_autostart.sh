@@ -45,6 +45,11 @@ fi
 . "$CONFIG_FILE"
 . "$LOCKFILE_SCRIPT"
 
+# Trigger automated backup at system start
+if [ -x /usr/autoscript/docker_backup_automated.sh ]; then
+    /usr/autoscript/docker_backup_automated.sh
+fi
+
 # Validate critical variables
 if [ -z "$AUTOSCRIPT_DIR" ]; then
     echo "[ERROR] AUTOSCRIPT_DIR is not set. Check your config file." >&2
@@ -232,12 +237,25 @@ start_saved_containers()
 save_containers() 
 {
     update_c_list
-    # Save images and config of running containers before exit
     IMAGE_BACKUP_DIR="$AUTOSCRIPT_DIR/image_backups"
     CONFIG_BACKUP_DIR="$AUTOSCRIPT_DIR/container_configs"
+    JSON_BACKUP_FILE="$AUTOSCRIPT_DIR/container_details.json"
     mkdir -p "$IMAGE_BACKUP_DIR" "$CONFIG_BACKUP_DIR"
-    for container in $(cat "$CONTAINER_LIST"); do
+    # Persist running container list
+    docker ps -q > "$CONTAINER_LIST"
+    # Collect all running container details into a single JSON file
+    echo '[' > "$JSON_BACKUP_FILE"
+    first=1
+    for container in $(docker ps -q); do
         if [[ "$container" =~ ^[a-zA-Z0-9]+$ ]]; then
+            # Get full inspect details
+            details=$(docker inspect "$container" 2>>"$ERROR_LOG")
+            if [ $first -eq 0 ]; then
+                echo ',' >> "$JSON_BACKUP_FILE"
+            fi
+            echo "$details" | jq '.[0]' >> "$JSON_BACKUP_FILE"
+            first=0
+            # Save image backup as before
             image=$(docker inspect --format='{{.Config.Image}}' "$container" 2>>"$ERROR_LOG")
             name=$(docker inspect --format='{{.Name}}' "$container" 2>>"$ERROR_LOG" | sed 's/\///')
             if [ -n "$image" ]; then
@@ -245,18 +263,46 @@ save_containers()
                 docker save "$image" -o "$backup_file" 2>>"$ERROR_LOG"
                 echo "[$(date)] Saved image $image for container $name ($container) to $backup_file" >> "$HEALTH_LOG"
             fi
-            # Save container config
-            docker inspect "$container" > "$CONFIG_BACKUP_DIR/${name}_${container}.json" 2>>"$ERROR_LOG"
         fi
     done
+    echo ']' >> "$JSON_BACKUP_FILE"
     exit 0
 }
 #catch shutdown/restart signal
 trap save_containers SIGTERM SIGINT SIGHUP
 
-# Immediately update container list and start any saved containers
+# Immediately update container list and restore from JSON backup if present
 update_c_list
-start_saved_containers
+JSON_BACKUP_FILE="$AUTOSCRIPT_DIR/container_details.json"
+if [ -f "$JSON_BACKUP_FILE" ]; then
+    # Loop through each container entry in the JSON file and restore
+    count=$(jq length "$JSON_BACKUP_FILE")
+    for idx in $(seq 0 $((count-1))); do
+        name=$(jq -r ".[$idx].Name" "$JSON_BACKUP_FILE" | sed 's/^\///')
+        image=$(jq -r ".[$idx].Config.Image" "$JSON_BACKUP_FILE")
+        ports=$(jq -r ".[$idx].HostConfig.PortBindings | keys[]?" "$JSON_BACKUP_FILE")
+        # Build docker run args
+        args=(run -d --name "$name")
+        for port in $ports; do
+            host_port=$(jq -r ".[$idx].HostConfig.PortBindings[\"$port\"][0].HostPort" "$JSON_BACKUP_FILE")
+            if [ -n "$host_port" ]; then
+                args+=( -p "$host_port:$port" )
+            fi
+        done
+        envs=$(jq -r ".[$idx].Config.Env[]?" "$JSON_BACKUP_FILE")
+        if [ -n "$envs" ]; then
+            while IFS= read -r env; do
+                if [ -n "$env" ]; then
+                    args+=( -e "$env" )
+                fi
+            done <<< "$envs"
+        fi
+        if [ -n "$image" ]; then
+            args+=( "$image" )
+            docker "${args[@]}" 2>>"$ERROR_LOG"
+        fi
+    done
+fi
 #listen for Docker events and update the list
 docker events --filter 'event=start' --filter 'event=stop' --format '{{.Status}}' | while read -r event; do
     update_c_list
