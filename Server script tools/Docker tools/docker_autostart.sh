@@ -1,5 +1,21 @@
 #!/bin/bash
 
+# To stop and terminate this script when running as a systemd service:
+#   sudo systemctl stop docker-autostart.service
+# To kill a manual/background run:
+#   pkill -f docker_autostart.sh
+
+# Check for root privileges
+if [ "$EUID" -ne 0 ]; then
+    echo "[ERROR] This script must be run as root. Exiting." >&2
+    exit 10
+fi
+
+
+# Ensure autoscript directory exists before anything else
+mkdir -p "$AUTOSCRIPT_DIR"
+chmod 700 "$AUTOSCRIPT_DIR"
+
 # This script must be run with sudo privileges for systemd and Docker operations.
 
 # Docker Autostart Script
@@ -19,9 +35,8 @@ open_error_log_once() {
 # Configuration file path
 # Default configuration values
 # Load configuration if it exists
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="$SCRIPT_DIR/docker_autostart.conf"
-LOCKFILE_SCRIPT="$SCRIPT_DIR/lockfile.sh"
+CONFIG_FILE="/usr/local/bin/docker_autostart.conf"
+LOCKFILE_SCRIPT="/usr/local/bin/lockfile.sh"
 
 if [ ! -r "$CONFIG_FILE" ]; then
     echo "[ERROR] Config file $CONFIG_FILE not found or not readable. Exiting in 10 seconds..." >&2
@@ -32,23 +47,66 @@ if [ ! -r "$LOCKFILE_SCRIPT" ]; then
     echo "[ERROR] Lockfile script $LOCKFILE_SCRIPT not found or not readable. Exiting in 10 seconds..." >&2
 
 # Ensure autoscript directory exists before any lockfile or log operations
-sudo mkdir -p "$AUTOSCRIPT_DIR"
-sudo chmod 700 "$AUTOSCRIPT_DIR"
+    mkdir -p "$AUTOSCRIPT_DIR"
+    chmod 700 "$AUTOSCRIPT_DIR"
     sleep 10
     exit 2
 fi
 . "$CONFIG_FILE"
+
+    # Try to source config and lockfile from local directory first, then fallback to /usr/local/bin
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" )" && pwd)"
+    CONFIG_FILE_LOCAL="$SCRIPT_DIR/docker_autostart.conf"
+    LOCKFILE_SCRIPT_LOCAL="$SCRIPT_DIR/lockfile.sh"
+    CONFIG_FILE_BIN="/usr/local/bin/docker_autostart.conf"
+    LOCKFILE_SCRIPT_BIN="/usr/local/bin/lockfile.sh"
+
+    if [ -r "$CONFIG_FILE_LOCAL" ]; then
+        CONFIG_FILE="$CONFIG_FILE_LOCAL"
+    elif [ -r "$CONFIG_FILE_BIN" ]; then
+        CONFIG_FILE="$CONFIG_FILE_BIN"
+    else
+        echo "[ERROR] Config file not found in local or /usr/local/bin. Exiting in 10 seconds..." >&2
+        sleep 10
+        exit 2
+    fi
+
+    if [ -r "$LOCKFILE_SCRIPT_LOCAL" ]; then
+        LOCKFILE_SCRIPT="$LOCKFILE_SCRIPT_LOCAL"
+    elif [ -r "$LOCKFILE_SCRIPT_BIN" ]; then
+        LOCKFILE_SCRIPT="$LOCKFILE_SCRIPT_BIN"
+    else
+        echo "[ERROR] Lockfile script not found in local or /usr/local/bin. Exiting in 10 seconds..." >&2
+        sleep 10
+        exit 2
+    fi
+    . "$CONFIG_FILE"
+    . "$LOCKFILE_SCRIPT"
+
+    # Check AUTOSCRIPT_DIR is set
 . "$LOCKFILE_SCRIPT"
+
+# Ensure container list file exists after config is sourced and variable is set
+if [ -n "$CONTAINER_LIST" ]; then
+
+    # Ensure autoscript directory exists
+    touch "$CONTAINER_LIST"
+else
+    echo "[ERROR] CONTAINER_LIST variable is not set. Check your config file." >&2
+    exit 11
+fi
 #lockfile path
  # LOCKFILE is sourced from config
 #Script start
 #identify the script process ID and avoid duplicates
 
+# Check AUTOSCRIPT_DIR is set
 clean_old_logs() {
     # Remove logs older than 12 hours (more frequent cleanup)
     find "$ERROR_LOG" "$HEALTH_LOG" -type f -mmin +720 -exec rm -f {} \;
 }
 
+# Ensure autoscript directory exists
 # Error rate limiting
 ERROR_COUNT=0
 ERROR_WINDOW_START=$(date +%s)
@@ -87,26 +145,12 @@ cleanup()
 trap cleanup EXIT SIGTERM SIGINT SIGHUP
 
 #create directory to store container list and set permission
-sudo mkdir -p "$AUTOSCRIPT_DIR"
-sudo chmod 700 "$AUTOSCRIPT_DIR"
+    mkdir -p "$AUTOSCRIPT_DIR"
+    chmod 700 "$AUTOSCRIPT_DIR"
 
-#set up the systemd service
-echo \
-"[Unit]
-Description=Docker Autostart - Save and restore running containers
-Requires=docker.service
-
-[Service]
-ExecStart=/usr/local/bin/docker_autostart.sh
-Restart=always
-User=root
-
-[Install]
-WantedBy=multi-user.target" | sudo tee /etc/systemd/system/docker-autostart.service > /dev/null
-#starts the service and enables it to start on boot
+#set up the systemd service only if missing
 if [ ! -f "$SYSTEMD_SERVICE" ]; then
-    echo \
-"[Unit]
+    echo "[Unit]
 Description=Docker Autostart - Save and restore running containers
 Requires=docker.service
 
@@ -159,7 +203,6 @@ done < "$c_list"
             echo "The following containers were dropped due to start failure:"
             cat "$DROPPED_CONTAINERS_LIST"
         fi
-    fi
 }
 #handle shutdown
 save_containers() 
@@ -173,22 +216,22 @@ start_saved_containers
 #listen for Docker events and update the list
 docker events --filter 'event=start' --filter 'event=stop' --format '{{.Status}}' | while read -r event; do
     update_c_list
-                         echo "[$(date)] Invalid container ID: $container" >> "$ERROR_LOG"
+done &
 #listen for Docker health_status events
 docker events --filter 'event=health_status' --format '{{.Actor.Attributes.name}}: {{.Status}}' | while read -r health_event; do
+    echo "[HEALTH EVENT] $health_event" >> "$HEALTH_LOG"
 done &
 #periodically check health status of running containers
 check_container_health() {
     for container in $(docker ps -q); do
         # Validate container ID before inspecting
-start_saved_containers
+        if [[ "$container" =~ ^[a-zA-Z0-9]+$ ]]; then
             health=$(docker inspect --format='{{.State.Health.Status}}' "$container" 2>>"$ERROR_LOG")
             if [ $? -ne 0 ]; then
                 echo "[$(date)] Error inspecting health for container $container" >> "$ERROR_LOG"
                 xdg-open "$ERROR_LOG" &
             fi
             name=$(docker inspect --format='{{.Name}}' "$container" 2>>"$ERROR_LOG" | sed 's/^\///')
-    echo "[HEALTH EVENT] $health_event" >> "$HEALTH_LOG"
             if [ $? -ne 0 ]; then
                 echo "[$(date)] Error inspecting name for container $container" >> "$ERROR_LOG"
                 xdg-open "$ERROR_LOG" &
