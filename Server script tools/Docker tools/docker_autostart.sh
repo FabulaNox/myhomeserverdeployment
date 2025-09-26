@@ -12,9 +12,7 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 
-# Ensure autoscript directory exists before anything else
-mkdir -p "$AUTOSCRIPT_DIR"
-chmod 700 "$AUTOSCRIPT_DIR"
+
 
 # This script must be run with sudo privileges for systemd and Docker operations.
 
@@ -32,69 +30,74 @@ ERROR_LOG_OPENED=0
 open_error_log_once() {
     if [ "$ERROR_LOG_OPENED" -eq 0 ]; then xdg-open "$ERROR_LOG" & ERROR_LOG_OPENED=1; fi
 }
-# Configuration file path
-# Default configuration values
-# Load configuration if it exists
-CONFIG_FILE="/usr/local/bin/docker_autostart.conf"
-LOCKFILE_SCRIPT="/usr/local/bin/lockfile.sh"
 
-if [ ! -r "$CONFIG_FILE" ]; then
-    echo "[ERROR] Config file $CONFIG_FILE not found or not readable. Exiting in 10 seconds..." >&2
+# Robust config and lockfile sourcing
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" )" && pwd)"
+CONFIG_FILE_LOCAL="$SCRIPT_DIR/docker_autostart.conf"
+LOCKFILE_SCRIPT_LOCAL="$SCRIPT_DIR/lockfile.sh"
+CONFIG_FILE_BIN="/usr/local/bin/docker_autostart.conf"
+LOCKFILE_SCRIPT_BIN="/usr/local/bin/lockfile.sh"
+
+if [ -r "$CONFIG_FILE_LOCAL" ]; then
+    CONFIG_FILE="$CONFIG_FILE_LOCAL"
+elif [ -r "$CONFIG_FILE_BIN" ]; then
+    CONFIG_FILE="$CONFIG_FILE_BIN"
+else
+    echo "[ERROR] Config file not found in local or /usr/local/bin. Exiting in 10 seconds..." >&2
     sleep 10
     exit 2
 fi
-if [ ! -r "$LOCKFILE_SCRIPT" ]; then
-    echo "[ERROR] Lockfile script $LOCKFILE_SCRIPT not found or not readable. Exiting in 10 seconds..." >&2
 
-# Ensure autoscript directory exists before any lockfile or log operations
-    mkdir -p "$AUTOSCRIPT_DIR"
-    chmod 700 "$AUTOSCRIPT_DIR"
+if [ -r "$LOCKFILE_SCRIPT_LOCAL" ]; then
+    LOCKFILE_SCRIPT="$LOCKFILE_SCRIPT_LOCAL"
+elif [ -r "$LOCKFILE_SCRIPT_BIN" ]; then
+    LOCKFILE_SCRIPT="$LOCKFILE_SCRIPT_BIN"
+else
+    echo "[ERROR] Lockfile script not found in local or /usr/local/bin. Exiting in 10 seconds..." >&2
     sleep 10
     exit 2
 fi
+
+# Source config and lockfile
 . "$CONFIG_FILE"
-
-    # Try to source config and lockfile from local directory first, then fallback to /usr/local/bin
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" )" && pwd)"
-    CONFIG_FILE_LOCAL="$SCRIPT_DIR/docker_autostart.conf"
-    LOCKFILE_SCRIPT_LOCAL="$SCRIPT_DIR/lockfile.sh"
-    CONFIG_FILE_BIN="/usr/local/bin/docker_autostart.conf"
-    LOCKFILE_SCRIPT_BIN="/usr/local/bin/lockfile.sh"
-
-    if [ -r "$CONFIG_FILE_LOCAL" ]; then
-        CONFIG_FILE="$CONFIG_FILE_LOCAL"
-    elif [ -r "$CONFIG_FILE_BIN" ]; then
-        CONFIG_FILE="$CONFIG_FILE_BIN"
-    else
-        echo "[ERROR] Config file not found in local or /usr/local/bin. Exiting in 10 seconds..." >&2
-        sleep 10
-        exit 2
-    fi
-
-    if [ -r "$LOCKFILE_SCRIPT_LOCAL" ]; then
-        LOCKFILE_SCRIPT="$LOCKFILE_SCRIPT_LOCAL"
-    elif [ -r "$LOCKFILE_SCRIPT_BIN" ]; then
-        LOCKFILE_SCRIPT="$LOCKFILE_SCRIPT_BIN"
-    else
-        echo "[ERROR] Lockfile script not found in local or /usr/local/bin. Exiting in 10 seconds..." >&2
-        sleep 10
-        exit 2
-    fi
-    . "$CONFIG_FILE"
-    . "$LOCKFILE_SCRIPT"
-
-    # Check AUTOSCRIPT_DIR is set
 . "$LOCKFILE_SCRIPT"
 
-# Ensure container list file exists after config is sourced and variable is set
-if [ -n "$CONTAINER_LIST" ]; then
-
-    # Ensure autoscript directory exists
-    touch "$CONTAINER_LIST"
-else
+# Validate critical variables
+if [ -z "$AUTOSCRIPT_DIR" ]; then
+    echo "[ERROR] AUTOSCRIPT_DIR is not set. Check your config file." >&2
+    exit 11
+fi
+if [ -z "$CONTAINER_LIST" ]; then
     echo "[ERROR] CONTAINER_LIST variable is not set. Check your config file." >&2
     exit 11
 fi
+if [ -z "$LOCKFILE" ]; then
+    echo "[ERROR] LOCKFILE variable is not set. Check your config file." >&2
+    exit 11
+fi
+if [ -z "$ERROR_LOG" ]; then
+    echo "[ERROR] ERROR_LOG variable is not set. Check your config file." >&2
+    exit 11
+fi
+if [ -z "$HEALTH_LOG" ]; then
+    echo "[ERROR] HEALTH_LOG variable is not set. Check your config file." >&2
+    exit 11
+fi
+if [ -z "$SYSTEMD_SERVICE" ]; then
+    echo "[ERROR] SYSTEMD_SERVICE variable is not set. Check your config file." >&2
+    exit 11
+fi
+if [ -z "$BIN_PATH" ]; then
+    echo "[ERROR] BIN_PATH variable is not set. Check your config file." >&2
+    exit 11
+fi
+
+# Ensure autoscript directory exists after config is sourced
+mkdir -p "$AUTOSCRIPT_DIR"
+chmod 700 "$AUTOSCRIPT_DIR"
+
+# Ensure container list file exists
+touch "$CONTAINER_LIST"
 #lockfile path
  # LOCKFILE is sourced from config
 #Script start
@@ -143,10 +146,6 @@ cleanup()
 
 #trap exit for cleanup
 trap cleanup EXIT SIGTERM SIGINT SIGHUP
-
-#create directory to store container list and set permission
-    mkdir -p "$AUTOSCRIPT_DIR"
-    chmod 700 "$AUTOSCRIPT_DIR"
 
 #set up the systemd service only if missing
 if [ ! -f "$SYSTEMD_SERVICE" ]; then
