@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# NOTE: This script must be run with root privileges for systemd and Docker operations.
+# This script must be run with sudo privileges for systemd and Docker operations.
 
 # Docker Autostart Script
 # - Prevents duplicate instances using PID file
@@ -81,11 +81,12 @@ cleanup()
 
 #trap exit for cleanup
 trap cleanup EXIT SIGTERM SIGINT SIGHUP
+
 #create directory to store container list and set permission
 sudo mkdir -p "$AUTOSCRIPT_DIR"
 sudo chmod 700 "$AUTOSCRIPT_DIR"
-#set up the systemd service
 
+#set up the systemd service
 echo \
 "[Unit]
 Description=Docker Autostart - Save and restore running containers
@@ -128,7 +129,7 @@ update_c_list()
         check_error_rate
     fi
 }
-#Function to start saving containers
+#function to start saving containers
 start_saved_containers() 
 {
 while read -r container; do
