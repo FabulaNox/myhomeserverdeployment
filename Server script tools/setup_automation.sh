@@ -3,8 +3,7 @@
 set -e
 
 trap 'err_line=$LINENO; \
-echo "Error occurred at line $err_line. Opening a new terminal for remaining steps."; \
-gnome-terminal -- bash -c "echo \"Continuing setup from line $err_line...\"; tail -n +$err_line \"$0\" | bash"; \
+echo "Error occurred at line $err_line. Please review and rerun from this line if needed."; \
 exit 1' ERR
 #First update
 echo "Updating system, will be prompted for password"
@@ -69,4 +68,4 @@ sudo apt install -y chrony
 sudo systemctl enable --now chrony
 sudo chronyc tracking
 #review dependencies
-sudo apt update && sudo apt upgrade -y && sudo apt --autoremove -y
+sudo apt update && sudo apt upgrade -y && sudo apt autoremove -y
