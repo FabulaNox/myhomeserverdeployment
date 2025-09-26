@@ -18,7 +18,10 @@ test_container_logs/
 *.testcontainer
 *.testimage
 
-# Ignore runtime and log files
+
+# Ignore new backup/config directories
+/usr/autoscript/container_configs/
+/usr/autoscript/image_backups/
 /usr/autoscript/*
 !docker_autostart.conf
 
