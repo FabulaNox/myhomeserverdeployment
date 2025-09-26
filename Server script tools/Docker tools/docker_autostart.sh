@@ -1,27 +1,10 @@
 #!/bin/bash
-
-# To stop and terminate this script when running as a systemd service:
-#   sudo systemctl stop docker-autostart.service
-# To kill a manual/background run:
-#   pkill -f docker_autostart.sh
-
-# Check for root privileges
+# Deployment: Use deploy_docker_autostart.sh for setup (automates copying, permissions, and service restart)
+# Stop: sudo systemctl stop docker-autostart.service or pkill -f docker_autostart.sh
 if [ "$EUID" -ne 0 ]; then
     echo "[ERROR] This script must be run as root. Exiting." >&2
     exit 10
 fi
-
-
-
-
-# This script must be run with sudo privileges for systemd and Docker operations.
-
-# Docker Autostart Script
-# - Prevents duplicate instances using PID file
-# - Sets up systemd service on first run
-# - Tracks and restores running containers
-# - Monitors Docker events and health
-# - Logs errors and health status
 
 DROPPED_CONTAINERS_LIST="$AUTOSCRIPT_DIR/dropped_containers.txt"
 rm -f "$DROPPED_CONTAINERS_LIST"
@@ -96,8 +79,9 @@ fi
 mkdir -p "$AUTOSCRIPT_DIR"
 chmod 700 "$AUTOSCRIPT_DIR"
 
-# Ensure container list file exists
+# Ensure container list and health log files exist
 touch "$CONTAINER_LIST"
+touch "$HEALTH_LOG"
 #lockfile path
  # LOCKFILE is sourced from config
 #Script start
@@ -149,7 +133,8 @@ trap cleanup EXIT SIGTERM SIGINT SIGHUP
 
 #set up the systemd service only if missing
 if [ ! -f "$SYSTEMD_SERVICE" ]; then
-    echo "[Unit]
+    cat <<EOF | sudo tee "$SYSTEMD_SERVICE" > /dev/null
+[Unit]
 Description=Docker Autostart - Save and restore running containers
 Requires=docker.service
 
@@ -159,7 +144,8 @@ Restart=always
 User=root
 
 [Install]
-WantedBy=multi-user.target" | sudo tee "$SYSTEMD_SERVICE" > /dev/null
+WantedBy=multi-user.target
+EOF
     sudo systemctl daemon-reload
     sudo systemctl enable docker-autostart.service
     sudo systemctl start docker-autostart.service
@@ -167,14 +153,17 @@ fi
 #container IDs handler variable
 c_list="$CONTAINER_LIST"
 #function to update the container list txt file
-update_c_list() 
-{
+update_c_list() {
     clean_old_logs
-    if ! docker ps -q > "$c_list" 2>>"$ERROR_LOG"; then
-    echo "[$(date)] Error updating container list" >> "$ERROR_LOG"
-    open_error_log_once
+    # Always create and populate the container list file using $CONTAINER_LIST
+    docker ps -q > "$CONTAINER_LIST" 2>>"$ERROR_LOG"
+    if [ $? -ne 0 ]; then
+        echo "[$(date)] Error updating container list" >> "$ERROR_LOG"
+        open_error_log_once
         check_error_rate
     fi
+    # Ensure file exists even if no containers
+    touch "$CONTAINER_LIST"
 }
 #function to start saving containers
 start_saved_containers() 
@@ -197,7 +186,6 @@ while read -r container; do
         check_error_rate
     fi
 done < "$c_list"
-        rm -f "$c_list"
         if [ -s "$DROPPED_CONTAINERS_LIST" ]; then
             echo "The following containers were dropped due to start failure:"
             cat "$DROPPED_CONTAINERS_LIST"
@@ -211,6 +199,9 @@ save_containers()
 }
 #catch shutdown/restart signal
 trap save_containers SIGTERM SIGINT SIGHUP
+
+# Immediately update container list and start any saved containers
+update_c_list
 start_saved_containers
 #listen for Docker events and update the list
 docker events --filter 'event=start' --filter 'event=stop' --format '{{.Status}}' | while read -r event; do
@@ -242,8 +233,8 @@ check_container_health() {
         fi
     done
 }
-#run health check every 5 minutes in the background
+
+# Persistent main loop to keep service alive
 while true; do
-    check_container_health
-    sleep 300
-done &
+    sleep 60
+done
