@@ -14,36 +14,26 @@ open_error_log_once() {
     if [ "$ERROR_LOG_OPENED" -eq 0 ]; then xdg-open "$ERROR_LOG" & ERROR_LOG_OPENED=1; fi
 }
 
+
 # Robust config and lockfile sourcing
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" )" && pwd)"
-CONFIG_FILE_LOCAL="$SCRIPT_DIR/docker_autostart.conf"
-LOCKFILE_SCRIPT_LOCAL="$SCRIPT_DIR/lockfile.sh"
-CONFIG_FILE_BIN="/usr/local/bin/docker_autostart.conf"
-LOCKFILE_SCRIPT_BIN="/usr/local/bin/lockfile.sh"
-
-if [ -r "$CONFIG_FILE_LOCAL" ]; then
-    CONFIG_FILE="$CONFIG_FILE_LOCAL"
-elif [ -r "$CONFIG_FILE_BIN" ]; then
-    CONFIG_FILE="$CONFIG_FILE_BIN"
+CONFIG_FILE="$SCRIPT_DIR/docker_autostart.conf"
+LOCKFILE_SCRIPT="$SCRIPT_DIR/lockfile.sh"
+if [ -r "$CONFIG_FILE" ]; then
+    . "$CONFIG_FILE"
+    export DOCKER_HOST
 else
-    echo "[ERROR] Config file not found in local or /usr/local/bin. Exiting in 10 seconds..." >&2
+    echo "[ERROR] Config file not found: $CONFIG_FILE" >&2
     sleep 10
     exit 2
 fi
-
-if [ -r "$LOCKFILE_SCRIPT_LOCAL" ]; then
-    LOCKFILE_SCRIPT="$LOCKFILE_SCRIPT_LOCAL"
-elif [ -r "$LOCKFILE_SCRIPT_BIN" ]; then
-    LOCKFILE_SCRIPT="$LOCKFILE_SCRIPT_BIN"
+if [ -r "$LOCKFILE_SCRIPT" ]; then
+    . "$LOCKFILE_SCRIPT"
 else
-    echo "[ERROR] Lockfile script not found in local or /usr/local/bin. Exiting in 10 seconds..." >&2
+    echo "[ERROR] Lockfile script not found: $LOCKFILE_SCRIPT" >&2
     sleep 10
     exit 2
 fi
-
-# Source config and lockfile
-. "$CONFIG_FILE"
-. "$LOCKFILE_SCRIPT"
 
 # Trigger automated backup at system start
 if [ -x /usr/autoscript/docker_backup_automated.sh ]; then
@@ -133,8 +123,8 @@ cleanup()
     exit 0
 }
 
-#trap exit for cleanup
-trap cleanup EXIT SIGTERM SIGINT SIGHUP
+#trap exit for cleanup and ensure backup on shutdown
+trap 'cleanup; bash "$SCRIPT_DIR/docker_backup_automated.sh"' EXIT SIGTERM SIGINT SIGHUP
 # Debug mode: skip persistent loop and background listeners for clean validation
 if [ "$DEBUG_MODE" = "1" ]; then
     echo "[DEBUG] Debug mode enabled: skipping event listeners and infinite loop."
@@ -271,37 +261,48 @@ save_containers()
 #catch shutdown/restart signal
 trap save_containers SIGTERM SIGINT SIGHUP
 
-# Immediately update container list and restore from JSON backup if present
-update_c_list
-JSON_BACKUP_FILE="$AUTOSCRIPT_DIR/container_details.json"
+
+# Restore containers from unified JSON backup (only those last known as running)
 if [ -f "$JSON_BACKUP_FILE" ]; then
-    # Loop through each container entry in the JSON file and restore
+    loaded=()
+    not_loaded=()
     count=$(jq length "$JSON_BACKUP_FILE")
     for idx in $(seq 0 $((count-1))); do
-        name=$(jq -r ".[$idx].Name" "$JSON_BACKUP_FILE" | sed 's/^\///')
-        image=$(jq -r ".[$idx].Config.Image" "$JSON_BACKUP_FILE")
-        ports=$(jq -r ".[$idx].HostConfig.PortBindings | keys[]?" "$JSON_BACKUP_FILE")
-        # Build docker run args
-        args=(run -d --name "$name")
-        for port in $ports; do
-            host_port=$(jq -r ".[$idx].HostConfig.PortBindings[\"$port\"][0].HostPort" "$JSON_BACKUP_FILE")
-            if [ -n "$host_port" ]; then
-                args+=( -p "$host_port:$port" )
-            fi
-        done
-        envs=$(jq -r ".[$idx].Config.Env[]?" "$JSON_BACKUP_FILE")
-        if [ -n "$envs" ]; then
-            while IFS= read -r env; do
-                if [ -n "$env" ]; then
-                    args+=( -e "$env" )
+        name=$(jq -r ".[$idx].ContainerName" "$JSON_BACKUP_FILE")
+        image=$(jq -r ".[$idx].Image" "$JSON_BACKUP_FILE")
+        status=$(jq -r ".[$idx].LastStatus" "$JSON_BACKUP_FILE")
+        ports=$(jq -r ".[$idx].Ports | keys[]?" "$JSON_BACKUP_FILE")
+        envs=$(jq -r ".[$idx].Env[]?" "$JSON_BACKUP_FILE")
+        if [ "$status" = "running" ]; then
+            args=(run -d --name "$name")
+            for port in $ports; do
+                host_port=$(jq -r ".[$idx].Ports[\"$port\"][0].HostPort" "$JSON_BACKUP_FILE")
+                if [ -n "$host_port" ]; then
+                    args+=( -p "$host_port:$port" )
                 fi
-            done <<< "$envs"
-        fi
-        if [ -n "$image" ]; then
-            args+=( "$image" )
-            docker "${args[@]}" 2>>"$ERROR_LOG"
+            done
+            if [ -n "$envs" ]; then
+                while IFS= read -r env; do
+                    if [ -n "$env" ]; then
+                        args+=( -e "$env" )
+                    fi
+                done <<< "$envs"
+            fi
+            if [ -n "$image" ]; then
+                args+=( "$image" )
+                docker "${args[@]}" 2>>"$ERROR_LOG" && loaded+=("$name") || not_loaded+=("$name")
+            else
+                not_loaded+=("$name")
+            fi
+        else
+            not_loaded+=("$name")
         fi
     done
+    {
+        echo "[RESTORE] $(date): Loaded containers: ${loaded[*]}"
+        echo "[RESTORE] $(date): Not loaded containers: ${not_loaded[*]}"
+        echo "[RESTORE] Restoration log: $RESTORE_LOG"
+    } | tee -a "$RESTORE_LOG"
 fi
 #listen for Docker events and update the list
 docker events --filter 'event=start' --filter 'event=stop' --format '{{.Status}}' | while read -r event; do
