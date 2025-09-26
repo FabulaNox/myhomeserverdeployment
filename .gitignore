@@ -10,3 +10,24 @@
 # MD5: 
 # SHA256: 
 # ---
+# Ignore Docker build/test artifacts
+Dockerfile
+Dockerfile.test
+test_image.tar
+test_container_logs/
+*.testcontainer
+*.testimage
+
+# Ignore runtime and log files
+/usr/autoscript/*
+!docker_autostart.conf
+
+# Ignore deployment and cleanup scripts if generated for testing
+recover_docker_autostart.sh
+auto_setup_recovery.sh
+
+# Ignore systemd unit files if generated for testing
+docker_autostart_bootstrap.service
+recover-docker-autostart.service
+
+# Add other test files as needed
