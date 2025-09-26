@@ -140,25 +140,6 @@ if [ "$DEBUG_MODE" = "1" ]; then
     exit 0
 fi
 
-#set up the systemd service only if missing
-if [ ! -f "$SYSTEMD_SERVICE" ]; then
-    cat <<EOF | sudo tee "$SYSTEMD_SERVICE" > /dev/null
-[Unit]
-Description=Docker Autostart - Save and restore running containers
-Requires=docker.service
-
-[Service]
-ExecStart=$BIN_PATH
-Restart=always
-User=root
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    sudo systemctl daemon-reload
-    sudo systemctl enable docker-autostart.service
-    sudo systemctl start docker-autostart.service
-fi
 #container IDs handler variable
 c_list="$CONTAINER_LIST"
 #function to update the container list txt file
@@ -225,7 +206,9 @@ start_saved_containers()
             envs=$(jq -r '.[0].Config.Env[]?' "$config_file")
             if [ -n "$envs" ]; then
                 while IFS= read -r env; do
-                    args+=( -e "$env" )
+                    if [ -n "$env" ]; then
+                        args+=( -e "$env" )
+                    fi
                 done <<< "$envs"
             fi
             if [ -n "$image" ]; then
@@ -241,6 +224,8 @@ start_saved_containers()
         else
             docker start "$container_name" 2>>"$ERROR_LOG"
         fi
+        # After restoration, flush (remove) the config file to avoid stale configs and port conflicts
+        rm -f "$config_file"
     done
 }
 #handle shutdown

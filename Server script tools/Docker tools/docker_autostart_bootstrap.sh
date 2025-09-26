@@ -1,3 +1,35 @@
+
+#!/bin/bash
+# docker_autostart_bootstrap.sh: Ensures docker_autostart prerequisites, restores service, and hands off to main service
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="$SCRIPT_DIR/docker_autostart.conf"
+if [ -r "$CONFIG_FILE" ]; then
+    . "$CONFIG_FILE"
+else
+    echo "[ERROR] Config file not found: $CONFIG_FILE" >&2; exit 2
+fi
+
+# Post-deployment checks for required files
+REQUIRED_FILES=("$CONFIG_FILE" "$LOCKFILE_SCRIPT" "$AUTOSTART_SCRIPT" "$DEPLOY_SCRIPT")
+for f in "${REQUIRED_FILES[@]}"; do
+    if [ ! -f "$f" ]; then
+        echo "[ERROR] Required file missing: $f. Run deployment script." >&2
+        if [ -x "$DEPLOY_SCRIPT" ]; then
+            bash "$DEPLOY_SCRIPT"
+        else
+            exit 2
+        fi
+    fi
+done
+
+# Lockfile usage to prevent overlapping runs
+if ! bash "$LOCKFILE_SCRIPT" acquire "$LOCKFILE"; then
+    echo "[ERROR] Another bootstrap instance is running. Exiting." >&2
+    exit 1
+fi
+trap "bash '$LOCKFILE_SCRIPT' release '$LOCKFILE'" EXIT SIGTERM SIGINT SIGHUP
 #!/bin/bash
 # docker_autostart_bootstrap.sh: Ensures docker_autostart prerequisites, restores service, and hands off to main service
 set -e
@@ -13,7 +45,6 @@ fi
 # Use config variables for all paths
 CONFIG_BACKUP_DIR="$SCRIPT_DIR/container_configs"
 # ERROR_LOG, SYSTEMD_SERVICE, BIN_PATH, LOCKFILE, etc. are now sourced from .conf
-LOCKFILE_SCRIPT="$LOCKFILE"
 
 
 # Paths from config
@@ -25,30 +56,6 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # Prepare prerequisites
-if [ ! -f "$CONFIG_FILE" ]; then
-    echo "[ERROR] Config file missing: $CONFIG_FILE. Run deployment script." >&2
-    if [ -x "$DEPLOY_SCRIPT" ]; then
-        bash "$DEPLOY_SCRIPT"
-    else
-        exit 2
-    fi
-fi
-if [ ! -f "$LOCKFILE_SCRIPT" ]; then
-    echo "[ERROR] Lockfile script missing: $LOCKFILE_SCRIPT. Run deployment script." >&2
-    if [ -x "$DEPLOY_SCRIPT" ]; then
-        bash "$DEPLOY_SCRIPT"
-    else
-        exit 2
-    fi
-fi
-if [ ! -f "$AUTOSTART_SCRIPT" ]; then
-    echo "[ERROR] Main script missing: $AUTOSTART_SCRIPT. Run deployment script." >&2
-    if [ -x "$DEPLOY_SCRIPT" ]; then
-        bash "$DEPLOY_SCRIPT"
-    else
-        exit 2
-    fi
-fi
 
 
 # Ensure the bootstrap systemd unit file exists and is correct
