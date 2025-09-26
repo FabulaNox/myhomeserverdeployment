@@ -1,7 +1,7 @@
+
 # Simple lockfile library for bash
-# Place this file in BOTH the script directory and /usr/local/bin for systemd/manual runs.
+# Place in BOTH the script directory and /usr/local/bin for systemd/manual runs.
 # Usage: source this file, then call acquire_lock <lockfile> and release_lock <lockfile>
-# Returns 1 if lock cannot be acquired (already running)
 
 acquire_lock() {
     local lockfile="$1"
