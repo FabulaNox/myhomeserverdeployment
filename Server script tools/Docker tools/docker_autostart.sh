@@ -155,10 +155,22 @@ c_list="$CONTAINER_LIST"
 #function to update the container list txt file
 update_c_list() {
     clean_old_logs
-    # Always create and populate the container list file using $CONTAINER_LIST
-    docker ps -q > "$CONTAINER_LIST" 2>>"$ERROR_LOG"
-    if [ $? -ne 0 ]; then
-        echo "[$(date)] Error updating container list" >> "$ERROR_LOG"
+    # Retry docker ps up to 5 times if socket error
+    local retries=0
+    local max_retries=5
+    local success=0
+    while [ $retries -lt $max_retries ]; do
+        docker ps -q > "$CONTAINER_LIST" 2>>"$ERROR_LOG"
+        if [ $? -eq 0 ]; then
+            success=1
+            break
+        else
+            grep -q "Cannot connect to the Docker daemon" "$ERROR_LOG" && sleep 2
+        fi
+        retries=$((retries+1))
+    done
+    if [ $success -eq 0 ]; then
+        echo "[$(date)] Error updating container list after $max_retries retries" >> "$ERROR_LOG"
         open_error_log_once
         check_error_rate
     fi
@@ -195,6 +207,20 @@ done < "$c_list"
 save_containers() 
 {
     update_c_list
+    # Save images of running containers before exit
+    IMAGE_BACKUP_DIR="$AUTOSCRIPT_DIR/image_backups"
+    mkdir -p "$IMAGE_BACKUP_DIR"
+    for container in $(cat "$CONTAINER_LIST"); do
+        if [[ "$container" =~ ^[a-zA-Z0-9]+$ ]]; then
+            image=$(docker inspect --format='{{.Config.Image}}' "$container" 2>>"$ERROR_LOG")
+            name=$(docker inspect --format='{{.Name}}' "$container" 2>>"$ERROR_LOG" | sed 's/\///')
+            if [ -n "$image" ]; then
+                backup_file="$IMAGE_BACKUP_DIR/${name}_${container}.tar"
+                docker save "$image" -o "$backup_file" 2>>"$ERROR_LOG"
+                echo "[$(date)] Saved image $image for container $name ($container) to $backup_file" >> "$HEALTH_LOG"
+            fi
+        fi
+    done
     exit 0
 }
 #catch shutdown/restart signal
