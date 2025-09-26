@@ -1,10 +1,4 @@
 # Simple lockfile library for bash
-# Usage:
-#   . lockfile.sh
-#   acquire_lock /path/to/lockfile || exit 1
-#   ... your code ...
-#   release_lock /path/to/lockfile
-
 acquire_lock() {
     local lockfile="$1"
     exec 200>"$lockfile"
