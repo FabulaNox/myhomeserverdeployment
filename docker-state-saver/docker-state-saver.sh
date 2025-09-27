@@ -28,21 +28,51 @@ log() {
 
 save_state() {
     log "Shutdown triggered. Saving running container state..."
-    # Use 'docker ps' to get the names of all currently running containers.
-    # This is the most reliable way to capture the state at shutdown.
-    if ! docker ps --filter "status=running" --format '{{.Names}}' > "$STATE_FILE"; then
-        log "ERROR: Failed to get running container list from Docker daemon."
-        # Create an empty file to prevent errors on the next boot.
-        : > "$STATE_FILE"
-        return 1
+    # Use a temporary file to aggregate containers from all daemons.
+    local TEMP_STATE_FILE
+    TEMP_STATE_FILE=$(mktemp)
+    local total_count=0
+
+    # 1. Save state for the system Docker daemon.
+    local system_socket="unix:///var/run/docker.sock"
+    if [[ -S "${system_socket#unix://}" ]]; then
+        log "Querying system Docker daemon at $system_socket..."
+        if DOCKER_HOST="$system_socket" docker ps --filter "status=running" --format "$system_socket,{{.Names}}" >> "$TEMP_STATE_FILE"; then
+            log "System daemon query successful."
+        else
+            log "Warning: Could not query system Docker daemon."
+        fi
     fi
-    local count
-    count=$(wc -l < "$STATE_FILE")
-    log "Successfully saved state for $count container(s) to $STATE_FILE."
+
+    # 2. Save state for the Docker Desktop daemon, if configured.
+    if [[ -n "$DOCKER_DESKTOP_USER" ]]; then
+        local user_id
+        user_id=$(id -u "$DOCKER_DESKTOP_USER" 2>/dev/null)
+        if [[ -n "$user_id" ]]; then
+            local desktop_socket="unix:///run/user/${user_id}/docker.sock"
+            if [[ -S "${desktop_socket#unix://}" ]]; then
+                log "Querying Docker Desktop daemon for user '$DOCKER_DESKTOP_USER' at $desktop_socket..."
+                if DOCKER_HOST="$desktop_socket" docker ps --filter "status=running" --format "$desktop_socket,{{.Names}}" >> "$TEMP_STATE_FILE"; then
+                    log "Docker Desktop daemon query successful."
+                else
+                    log "Warning: Could not query Docker Desktop daemon for user '$DOCKER_DESKTOP_USER'."
+                fi
+            else
+                log "Warning: Docker Desktop socket not found at $desktop_socket for user '$DOCKER_DESKTOP_USER'."
+            fi
+        else
+            log "Warning: Could not find UID for Docker Desktop user '$DOCKER_DESKTOP_USER'."
+        fi
+    fi
+
+    # Finalize the state file.
+    mv "$TEMP_STATE_FILE" "$STATE_FILE"
+    total_count=$(wc -l < "$STATE_FILE")
+    log "Successfully saved state for $total_count container(s) from all daemons to $STATE_FILE."
 }
 
 restore_state() {
-    log "System startup. Restoring container state..."
+    log "System startup. Restoring container state from all daemons..."
     if [[ ! -f "$STATE_FILE" ]]; then
         log "State file $STATE_FILE not found. Nothing to restore."
         return 0
@@ -56,15 +86,16 @@ restore_state() {
     local restored_count=0
     local failed_count=0
 
-    # Read each line (container name) from the state file and start it.
-    while IFS= read -r container_name; do
-        if [[ -n "$container_name" ]]; then
-            log "Attempting to start container: $container_name"
-            if docker start "$container_name"; then
+    # Read each line, which is now in the format "socket_path,container_name".
+    while IFS=, read -r socket_path container_name; do
+        if [[ -n "$socket_path" && -n "$container_name" ]]; then
+            log "Attempting to start container '$container_name' on daemon at '$socket_path'..."
+            # Set DOCKER_HOST to target the correct daemon for the start command.
+            if DOCKER_HOST="$socket_path" docker start "$container_name"; then
                 log "Successfully started: $container_name"
                 ((restored_count++))
             else
-                log "ERROR: Failed to start container: $container_name"
+                log "ERROR: Failed to start container '$container_name' on daemon at '$socket_path'."
                 ((failed_count++))
             fi
         fi
