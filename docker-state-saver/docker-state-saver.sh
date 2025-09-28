@@ -1,18 +1,14 @@
 #!/usr/bin/env bash
 #
 # Docker State Saver - Saves and restores running containers across reboots.
-# This script is intended to be run by the docker-state-saver.service systemd unit.
-# It must be placed in /usr/local/bin/
 
 set -o pipefail
 
-# Load configuration from a central location.
+# --- Load Configuration from the installed saver.conf ---
 CONFIG_FILE="/etc/docker-state-saver/saver.conf"
 if [[ -f "$CONFIG_FILE" ]]; then
-    # shellcheck source=/dev/null
     source "$CONFIG_FILE"
 else
-    # Fallback if config is missing, though installation should prevent this.
     echo "FATAL: Configuration file $CONFIG_FILE not found." >&2
     exit 1
 fi
@@ -66,19 +62,24 @@ save_state() {
     fi
 
     # Finalize the state file.
-    mv "$TEMP_STATE_FILE" "$STATE_FILE"
-    total_count=$(wc -l < "$STATE_FILE")
-    log "Successfully saved state for $total_count container(s) from all daemons to $STATE_FILE."
+    # The state file is now located at the path defined by STATE_DIR and a hardcoded name.
+    # Let's use the sourced variables instead.
+    local state_file_path="${STATE_DIR}/running_containers.list"
+    mv "$TEMP_STATE_FILE" "$state_file_path"
+    total_count=$(wc -l < "$state_file_path")
+    log "Successfully saved state for $total_count container(s) from all daemons to $state_file_path."
 }
 
 restore_state() {
+    # The state file path should be constructed from sourced variables.
+    local state_file_path="${STATE_DIR}/running_containers.list"
     log "System startup. Restoring container state from all daemons..."
-    if [[ ! -f "$STATE_FILE" ]]; then
-        log "State file $STATE_FILE not found. Nothing to restore."
+    if [[ ! -f "$state_file_path" ]]; then
+        log "State file $state_file_path not found. Nothing to restore."
         return 0
     fi
 
-    if [[ ! -s "$STATE_FILE" ]]; then
+    if [[ ! -s "$state_file_path" ]]; then
         log "State file is empty. No containers to restore."
         return 0
     fi
@@ -99,7 +100,7 @@ restore_state() {
                 ((failed_count++))
             fi
         fi
-    done < "$STATE_FILE"
+    done < "$state_file_path"
 
     log "Restore complete. Started: $restored_count, Failed: $failed_count."
 }
