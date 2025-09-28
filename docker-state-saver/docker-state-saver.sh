@@ -5,7 +5,8 @@
 set -o pipefail
 
 
-# --- Parse global flags: --config, --log, --help ---
+### --- Parse global flags: --config, --log, --help ---
+# SECURITY: Only use trusted config files. Do not allow untrusted users to write to the config file or its directory.
 CONFIG_FILE="/etc/docker-state-saver/saver.conf"
 LOG_OVERRIDE=""
 SHOW_HELP=0
@@ -36,7 +37,14 @@ if [[ $SHOW_HELP -eq 1 ]]; then
     exit 0
 fi
 
+
+# SECURITY: Validate config file ownership (must be owned by root or current user)
 if [[ -f "$CONFIG_FILE" ]]; then
+    config_owner=$(stat -c %U "$CONFIG_FILE")
+    if [[ "$config_owner" != "root" && "$config_owner" != "$(whoami)" ]]; then
+        echo "FATAL: Config file $CONFIG_FILE is not owned by root or current user ($config_owner)." >&2
+        exit 1
+    fi
     source "$CONFIG_FILE"
 else
     echo "FATAL: Configuration file $CONFIG_FILE not found." >&2
@@ -47,16 +55,21 @@ if [[ -n "$LOG_OVERRIDE" ]]; then
     LOG_FILE="$LOG_OVERRIDE"
 fi
 
-# Ensure the state directory exists.
+
+# Ensure the state directory exists and is secure.
 mkdir -p "$STATE_DIR"
+chmod 700 "$STATE_DIR"
 
 # Centralized logging function.
 log() {
     # Appends a timestamped message to the log file.
+    # SECURITY: Sanitize container names for log output
+    local msg="$1"
+    msg="${msg//[$'\n\r']/ }"  # Remove newlines
     if [[ "$VERBOSE" == 1 ]]; then
-        echo "$(date --iso-8601=seconds) - $1" | tee -a "$LOG_FILE"
+        echo "$(date --iso-8601=seconds) - $msg" | tee -a "$LOG_FILE"
     else
-        echo "$(date --iso-8601=seconds) - $1" >> "$LOG_FILE"
+        echo "$(date --iso-8601=seconds) - $msg" >> "$LOG_FILE"
     fi
 }
 
@@ -64,6 +77,11 @@ log() {
 
 # Save state with support for --all, --filter, --dry-run, --verbose
 save_state() {
+    # SECURITY: Trap to clean up temp files on exit or interruption
+    local TEMP_STATE_FILE
+    TEMP_STATE_FILE=""
+    cleanup_temp() { [[ -n "$TEMP_STATE_FILE" && -f "$TEMP_STATE_FILE" ]] && rm -f "$TEMP_STATE_FILE"; }
+    trap cleanup_temp EXIT INT TERM
     local SAVE_ALL=0
     local FILTER_PATTERN=""
     local DRY_RUN=0
@@ -80,7 +98,6 @@ save_state() {
     done
 
     log "Shutdown triggered. Saving container state..."
-    local TEMP_STATE_FILE
     TEMP_STATE_FILE=$(mktemp)
     local total_count=0
     local status_filter="status=running"
@@ -131,19 +148,24 @@ save_state() {
     if [[ $DRY_RUN -eq 1 ]]; then
         log "[DRY RUN] Would save the following containers:"
         cat "$TEMP_STATE_FILE"
-        rm -f "$TEMP_STATE_FILE"
+        cleanup_temp
+        trap - EXIT INT TERM
         return 0
     fi
 
     # Finalize the state file using STATE_FILE from config.
     mv "$TEMP_STATE_FILE" "$STATE_FILE"
+    chmod 600 "$STATE_FILE"
     total_count=$(wc -l < "$STATE_FILE")
     log "Successfully saved state for $total_count container(s) from all daemons to $STATE_FILE."
+    trap - EXIT INT TERM
 }
 
 
 # Restore state with support for --force, --skip-missing, --dry-run, --verbose, --rollback
 restore_state() {
+    # SECURITY: Trap to clean up temp files on exit or interruption (if any are used)
+    trap '' EXIT INT TERM
     local FORCE=0
     local SKIP_MISSING=0
     local DRY_RUN=0
@@ -162,6 +184,7 @@ restore_state() {
     done
 
     log "System startup. Restoring container state from all daemons..."
+
     local state_file_to_use="$STATE_FILE"
     if [[ -n "$ROLLBACK_FILE" ]]; then
         state_file_to_use="$ROLLBACK_FILE"
@@ -170,6 +193,8 @@ restore_state() {
         log "State file $state_file_to_use not found. Nothing to restore."
         return 0
     fi
+
+    chmod 600 "$state_file_to_use"
 
     if [[ ! -s "$state_file_to_use" ]]; then
         log "State file is empty. No containers to restore."
@@ -220,6 +245,8 @@ restore_state() {
 # Manual save function (can be called by a sudo-level command)
 manual_save() {
     log "Manual save triggered by user $(whoami)"
+    # SECURITY: Set restrictive permissions on log file
+    touch "$LOG_FILE" && chmod 600 "$LOG_FILE"
     save_state "$@"
     log "Manual save completed."
 }
@@ -227,6 +254,8 @@ manual_save() {
 # Manual checkpoint-restore function (force restore from last save list)
 checkpoint_restore() {
     log "Manual checkpoint-restore triggered by user $(whoami) (ignoring current state)"
+    # SECURITY: Set restrictive permissions on log file
+    touch "$LOG_FILE" && chmod 600 "$LOG_FILE"
     restore_state "$@"
     log "Manual checkpoint-restore completed."
 }
