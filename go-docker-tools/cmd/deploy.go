@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
+	"path/filepath"
+	"runtime"
 )
 
 // DeployAutostartCommand installs or uninstalls autostart integration (systemd or cron)
@@ -14,17 +17,148 @@ func DeployAutostartCommand(args []string) {
 	}
 	switch args[0] {
 	case "install":
-		installAutostart()
+		switch runtime.GOOS {
+		case "linux":
+			installAutostart()
+		case "windows":
+			installWindowsService()
+		case "darwin":
+			installLaunchd()
+		default:
+			fmt.Println("[WARN] Autostart install not supported on this platform.")
+		}
 	case "uninstall":
-		uninstallAutostart()
+		switch runtime.GOOS {
+		case "linux":
+			uninstallAutostart()
+		case "windows":
+			uninstallWindowsService()
+		case "darwin":
+			uninstallLaunchd()
+		default:
+			fmt.Println("[WARN] Autostart uninstall not supported on this platform.")
+		}
 	default:
 		fmt.Println("Unknown deploy action:", args[0])
 		os.Exit(1)
 	}
 }
 
+// Windows Service install/uninstall (scaffold)
+func installWindowsService() {
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Println("[ERROR] Could not determine executable path:", err)
+		os.Exit(1)
+	}
+	serviceName := "GoDockerTools"
+	// Try to find nssm.exe in PATH or current dir
+	nssmPath, err := exec.LookPath("nssm.exe")
+	if err != nil {
+		nssmPath = filepath.Join(filepath.Dir(exe), "nssm.exe")
+	}
+	if _, err := os.Stat(nssmPath); err != nil {
+		fmt.Println("[ERROR] nssm.exe not found. Please download NSSM and place it in the same directory as this binary or in your PATH.")
+		os.Exit(2)
+	}
+	// Install service
+	cmd := exec.Command(nssmPath, "install", serviceName, exe, "autostart")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Println("[ERROR] Failed to install Windows service:", err)
+		os.Exit(3)
+	}
+	fmt.Println("[NOTIFY] Windows service installed via NSSM. Use 'nssm start", serviceName, "' to start.")
+}
+func uninstallWindowsService() {
+	serviceName := "GoDockerTools"
+	nssmPath, err := exec.LookPath("nssm.exe")
+	if err != nil {
+		exe, _ := os.Executable()
+		nssmPath = filepath.Join(filepath.Dir(exe), "nssm.exe")
+	}
+	if _, err := os.Stat(nssmPath); err != nil {
+		fmt.Println("[ERROR] nssm.exe not found. Please download NSSM and place it in the same directory as this binary or in your PATH.")
+		os.Exit(2)
+	}
+	cmd := exec.Command(nssmPath, "remove", serviceName, "confirm")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Println("[ERROR] Failed to uninstall Windows service:", err)
+		os.Exit(3)
+	}
+	fmt.Println("[NOTIFY] Windows service uninstalled via NSSM.")
+}
+
+// macOS launchd install/uninstall (scaffold)
+func installLaunchd() {
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Println("[ERROR] Could not determine executable path:", err)
+		os.Exit(1)
+	}
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Println("[ERROR] Could not determine user home directory:", err)
+		os.Exit(2)
+	}
+	plistPath := filepath.Join(userHome, "Library", "LaunchAgents", "com.godockertools.autostart.plist")
+	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.godockertools.autostart</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>%s</string>
+		<string>autostart</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+</dict>
+</plist>
+`, exe)
+	if err := os.WriteFile(plistPath, []byte(plist), 0644); err != nil {
+		fmt.Println("[ERROR] Failed to write launchd plist:", err)
+		os.Exit(3)
+	}
+	cmd := exec.Command("launchctl", "load", plistPath)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Println("[ERROR] Failed to load launchd agent:", err)
+		os.Exit(4)
+	}
+	fmt.Println("[NOTIFY] macOS launchd agent installed and loaded.")
+}
+
+func uninstallLaunchd() {
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Println("[ERROR] Could not determine user home directory:", err)
+		os.Exit(1)
+	}
+	plistPath := filepath.Join(userHome, "Library", "LaunchAgents", "com.godockertools.autostart.plist")
+	cmd := exec.Command("launchctl", "unload", plistPath)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	_ = cmd.Run() // ignore error if not loaded
+	if err := os.Remove(plistPath); err != nil {
+		fmt.Println("[ERROR] Failed to remove launchd plist:", err)
+		os.Exit(2)
+	}
+	fmt.Println("[NOTIFY] macOS launchd agent unloaded and removed.")
+}
+
 func installAutostart() {
 	// Example: create a systemd service file for autostart
+	if runtime.GOOS != "linux" {
+		fmt.Println("[WARN] Autostart deployment is only supported on Linux/systemd. Skipping.")
+		return
+	}
 	service := `[Unit]
 Description=Go Docker Tools Autostart
 After=docker.service
@@ -54,6 +188,10 @@ WantedBy=multi-user.target
 }
 
 func uninstallAutostart() {
+	if runtime.GOOS != "linux" {
+		fmt.Println("[WARN] Autostart uninstall is only supported on Linux/systemd. Skipping.")
+		return
+	}
 	path := "/etc/systemd/system/go-docker-tools-autostart.service"
 	if err := exec.Command("systemctl", "disable", "go-docker-tools-autostart").Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "[ERROR] Failed to disable systemd service:", err)
