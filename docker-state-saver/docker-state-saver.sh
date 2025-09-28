@@ -22,6 +22,7 @@ log() {
     echo "$(date --iso-8601=seconds) - $1" >> "$LOG_FILE"
 }
 
+
 save_state() {
     log "Shutdown triggered. Saving running container state..."
     # Use a temporary file to aggregate containers from all daemons.
@@ -61,25 +62,20 @@ save_state() {
         fi
     fi
 
-    # Finalize the state file.
-    # The state file is now located at the path defined by STATE_DIR and a hardcoded name.
-    # Let's use the sourced variables instead.
-    local state_file_path="${STATE_DIR}/running_containers.list"
-    mv "$TEMP_STATE_FILE" "$state_file_path"
-    total_count=$(wc -l < "$state_file_path")
-    log "Successfully saved state for $total_count container(s) from all daemons to $state_file_path."
+    # Finalize the state file using STATE_FILE from config.
+    mv "$TEMP_STATE_FILE" "$STATE_FILE"
+    total_count=$(wc -l < "$STATE_FILE")
+    log "Successfully saved state for $total_count container(s) from all daemons to $STATE_FILE."
 }
 
 restore_state() {
-    # The state file path should be constructed from sourced variables.
-    local state_file_path="${STATE_DIR}/running_containers.list"
     log "System startup. Restoring container state from all daemons..."
-    if [[ ! -f "$state_file_path" ]]; then
-        log "State file $state_file_path not found. Nothing to restore."
+    if [[ ! -f "$STATE_FILE" ]]; then
+        log "State file $STATE_FILE not found. Nothing to restore."
         return 0
     fi
 
-    if [[ ! -s "$state_file_path" ]]; then
+    if [[ ! -s "$STATE_FILE" ]]; then
         log "State file is empty. No containers to restore."
         return 0
     fi
@@ -100,9 +96,23 @@ restore_state() {
                 ((failed_count++))
             fi
         fi
-    done < "$state_file_path"
+    done < "$STATE_FILE"
 
     log "Restore complete. Started: $restored_count, Failed: $failed_count."
+}
+
+# Manual save function (can be called by a sudo-level command)
+manual_save() {
+    log "Manual save triggered by user $(whoami)"
+    save_state
+    log "Manual save completed."
+}
+
+# Manual checkpoint-restore function (force restore from last save list)
+checkpoint_restore() {
+    log "Manual checkpoint-restore triggered by user $(whoami) (ignoring current state)"
+    restore_state
+    log "Manual checkpoint-restore completed."
 }
 
 # Main logic: decide which action to perform based on the first argument.
@@ -113,8 +123,19 @@ case "$1" in
     restore)
         restore_state
         ;;
+    manual-save)
+        manual_save
+        ;;
+    checkpoint-restore)
+        # Optionally support -z as a no-op flag for future extension
+        if [[ "$2" == "-z" ]]; then
+            checkpoint_restore
+        else
+            checkpoint_restore
+        fi
+        ;;
     *)
-        echo "Usage: $0 {save|restore}" >&2
+        echo "Usage: $0 {save|restore|manual-save|checkpoint-restore [-z]}" >&2
         exit 1
         ;;
 esac

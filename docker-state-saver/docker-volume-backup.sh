@@ -14,14 +14,20 @@ else
     exit 1
 fi
 
-# --- Lockfile ---
+# --- Lockfile with PID and stale lock detection ---
 LOCK_FILE="/tmp/docker-volume-backup.lock"
 if [ -e "$LOCK_FILE" ]; then
-    echo "Lockfile $LOCK_FILE exists, another backup may be running." >&2
-    exit 1
+    old_pid=$(cat "$LOCK_FILE" 2>/dev/null)
+    if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+        echo "Lockfile $LOCK_FILE exists and process $old_pid is running. Another backup may be running." >&2
+        exit 1
+    else
+        echo "Stale lockfile found. Removing."
+        rm -f "$LOCK_FILE"
+    fi
 fi
+echo $$ > "$LOCK_FILE"
 trap 'rm -f "$LOCK_FILE"' EXIT
-touch "$LOCK_FILE"
 
 # --- Logging ---
 log() {
