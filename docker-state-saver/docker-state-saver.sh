@@ -120,25 +120,45 @@ save_state() {
         fi
     fi
 
+
     # 2. Save state for the Docker Desktop daemon, if configured.
     if [[ -n "$DOCKER_DESKTOP_USER" ]]; then
         local user_id
         user_id=$(id -u "$DOCKER_DESKTOP_USER" 2>/dev/null)
         if [[ -n "$user_id" ]]; then
             local desktop_socket="unix:///run/user/${user_id}/docker.sock"
-            if [[ -S "${desktop_socket#unix://}" ]]; then
-                log "Querying Docker Desktop daemon for user '$DOCKER_DESKTOP_USER' at $desktop_socket..."
-                local ps_args2=(docker ps)
-                [[ -n "$status_filter" ]] && ps_args2+=(--filter "$status_filter")
-                [[ -n "$FILTER_PATTERN" ]] && ps_args2+=(--filter "name=$FILTER_PATTERN")
-                ps_args2+=(--format "$desktop_socket,{{.Names}}")
-                if DOCKER_HOST="$desktop_socket" "${ps_args2[@]}" >> "$TEMP_STATE_FILE"; then
-                    log "Docker Desktop daemon query successful."
+            local desktop_socket_path="/run/user/${user_id}/docker.sock"
+            # Explicitly check if Docker Desktop process is running
+            if pgrep -u "$DOCKER_DESKTOP_USER" -f 'docker-desktop' >/dev/null 2>&1; then
+                log "Docker Desktop process detected for user '$DOCKER_DESKTOP_USER'."
+                # Wait for the socket to appear (up to 10 seconds)
+                local wait_time=0
+                while [[ ! -S "$desktop_socket_path" && $wait_time -lt 10 ]]; do
+                    sleep 1
+                    ((wait_time++))
+                done
+                if [[ -S "$desktop_socket_path" ]]; then
+                    log "Docker Desktop socket is now available at $desktop_socket. Testing connection..."
+                    # Test the socket by running a simple docker command
+                    if DOCKER_HOST="$desktop_socket" docker info >/dev/null 2>&1; then
+                        log "Docker Desktop socket is working. Querying containers..."
+                        local ps_args2=(docker ps)
+                        [[ -n "$status_filter" ]] && ps_args2+=(--filter "$status_filter")
+                        [[ -n "$FILTER_PATTERN" ]] && ps_args2+=(--filter "name=$FILTER_PATTERN")
+                        ps_args2+=(--format "$desktop_socket,{{.Names}}")
+                        if DOCKER_HOST="$desktop_socket" "${ps_args2[@]}" >> "$TEMP_STATE_FILE"; then
+                            log "Docker Desktop daemon query successful."
+                        else
+                            log "Warning: Could not query Docker Desktop daemon for user '$DOCKER_DESKTOP_USER'."
+                        fi
+                    else
+                        log "ERROR: Docker Desktop socket is present but not responding for user '$DOCKER_DESKTOP_USER'."
+                    fi
                 else
-                    log "Warning: Could not query Docker Desktop daemon for user '$DOCKER_DESKTOP_USER'."
+                    log "ERROR: Docker Desktop process is running but socket did not appear at $desktop_socket after 10 seconds."
                 fi
             else
-                log "Warning: Docker Desktop socket not found at $desktop_socket for user '$DOCKER_DESKTOP_USER'."
+                log "Docker Desktop process is not running for user '$DOCKER_DESKTOP_USER'. Skipping Docker Desktop state save."
             fi
         else
             log "Warning: Could not find UID for Docker Desktop user '$DOCKER_DESKTOP_USER'."
@@ -204,9 +224,56 @@ restore_state() {
     local restored_count=0
     local failed_count=0
 
+
+    # Track Docker Desktop socket readiness for each user/socket
+    declare -A desktop_socket_ready
+
     # Read each line, which is now in the format "socket_path,container_name".
     while IFS=, read -r socket_path container_name; do
         if [[ -n "$socket_path" && -n "$container_name" ]]; then
+            # Detect if this is a Docker Desktop socket
+            if [[ "$socket_path" =~ ^unix:///run/user/([0-9]+)/docker.sock$ ]]; then
+                user_id="${BASH_REMATCH[1]}"
+                desktop_socket_path="/run/user/${user_id}/docker.sock"
+                desktop_socket="unix:///run/user/${user_id}/docker.sock"
+                # Only check readiness once per socket
+                if [[ -z "${desktop_socket_ready[$desktop_socket]}" ]]; then
+                    # Check if Docker Desktop process is running for this user
+                    user_name=$(getent passwd "$user_id" | cut -d: -f1)
+                    if [[ -n "$user_name" && $(pgrep -u "$user_name" -f 'docker-desktop' 2>/dev/null) ]]; then
+                        log "Docker Desktop process detected for user '$user_name' (uid $user_id)."
+                        # Wait for the socket to appear (up to 10 seconds)
+                        wait_time=0
+                        while [[ ! -S "$desktop_socket_path" && $wait_time -lt 10 ]]; do
+                            sleep 1
+                            ((wait_time++))
+                        done
+                        if [[ -S "$desktop_socket_path" ]]; then
+                            log "Docker Desktop socket is now available at $desktop_socket. Testing connection..."
+                            if DOCKER_HOST="$desktop_socket" docker info >/dev/null 2>&1; then
+                                log "Docker Desktop socket is working. Proceeding with restore."
+                                desktop_socket_ready[$desktop_socket]=1
+                            else
+                                log "ERROR: Docker Desktop socket is present but not responding for user '$user_name'. Skipping restore for this socket."
+                                desktop_socket_ready[$desktop_socket]=0
+                                continue
+                            fi
+                        else
+                            log "ERROR: Docker Desktop process is running but socket did not appear at $desktop_socket after 10 seconds. Skipping restore for this socket."
+                            desktop_socket_ready[$desktop_socket]=0
+                            continue
+                        fi
+                    else
+                        log "Docker Desktop process is not running for user id $user_id. Skipping restore for this socket."
+                        desktop_socket_ready[$desktop_socket]=0
+                        continue
+                    fi
+                fi
+                # If readiness check failed, skip
+                if [[ "${desktop_socket_ready[$desktop_socket]}" != "1" ]]; then
+                    continue
+                fi
+            fi
             log "Attempting to start container '$container_name' on daemon at '$socket_path'..."
             # Set DOCKER_HOST to target the correct daemon for the start command.
             local already_running=0
