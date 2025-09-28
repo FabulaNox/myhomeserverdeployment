@@ -56,22 +56,29 @@ if [[ -n "$LOG_OVERRIDE" ]]; then
 fi
 
 
+
+# Set default socket paths if not set in config
+SYSTEM_DOCKER_SOCKET="${SYSTEM_DOCKER_SOCKET:-unix:///var/run/docker.sock}"
+DOCKER_DESKTOP_SOCKET_TEMPLATE="${DOCKER_DESKTOP_SOCKET_TEMPLATE:-unix:///run/user/{USER_ID}/docker.sock}"
+
 # Ensure the state directory exists and is secure.
 mkdir -p "$STATE_DIR"
 chmod 700 "$STATE_DIR"
 
-# Centralized logging function.
-log() {
-    # Appends a timestamped message to the log file.
-    # SECURITY: Sanitize container names for log output
-    local msg="$1"
-    msg="${msg//[$'\n\r']/ }"  # Remove newlines
-    if [[ "$VERBOSE" == 1 ]]; then
-        echo "$(date --iso-8601=seconds) - $msg" | tee -a "$LOG_FILE"
-    else
-        echo "$(date --iso-8601=seconds) - $msg" >> "$LOG_FILE"
-    fi
-}
+
+
+
+# Source centralized logging, docker binary check, and per-daemon helpers
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/docker-log-helper.sh"
+source "$SCRIPT_DIR/docker-check-binary.sh"
+if [[ "$DOCKER_BINARY_OK" != "1" ]]; then
+    log "ERROR: docker binary not found. Aborting main script."; exit 1
+fi
+source "$SCRIPT_DIR/docker-save-system.sh"
+source "$SCRIPT_DIR/docker-save-desktop.sh"
+source "$SCRIPT_DIR/docker-restore-system.sh"
+source "$SCRIPT_DIR/docker-restore-desktop.sh"
 
 
 
@@ -105,64 +112,12 @@ save_state() {
         status_filter=""
     fi
 
-    # 1. Save state for the system Docker daemon.
-    local system_socket="unix:///var/run/docker.sock"
-    if [[ -S "${system_socket#unix://}" ]]; then
-        log "Querying system Docker daemon at $system_socket..."
-        local ps_args=(docker ps)
-        [[ -n "$status_filter" ]] && ps_args+=(--filter "$status_filter")
-        [[ -n "$FILTER_PATTERN" ]] && ps_args+=(--filter "name=$FILTER_PATTERN")
-        ps_args+=(--format "$system_socket,{{.Names}}")
-        if DOCKER_HOST="$system_socket" "${ps_args[@]}" >> "$TEMP_STATE_FILE"; then
-            log "System daemon query successful."
-        else
-            log "Warning: Could not query system Docker daemon."
-        fi
-    fi
+    # 1. Save state for the system Docker daemon (modularized)
+    source "$SCRIPT_DIR/docker-save-system.sh"
 
-
-    # 2. Save state for the Docker Desktop daemon, if configured.
+    # 2. Save state for the Docker Desktop daemon, if configured (modularized)
     if [[ -n "$DOCKER_DESKTOP_USER" ]]; then
-        local user_id
-        user_id=$(id -u "$DOCKER_DESKTOP_USER" 2>/dev/null)
-        if [[ -n "$user_id" ]]; then
-            local desktop_socket="unix:///run/user/${user_id}/docker.sock"
-            local desktop_socket_path="/run/user/${user_id}/docker.sock"
-            # Explicitly check if Docker Desktop process is running
-            if pgrep -u "$DOCKER_DESKTOP_USER" -f 'docker-desktop' >/dev/null 2>&1; then
-                log "Docker Desktop process detected for user '$DOCKER_DESKTOP_USER'."
-                # Wait for the socket to appear (up to 10 seconds)
-                local wait_time=0
-                while [[ ! -S "$desktop_socket_path" && $wait_time -lt 10 ]]; do
-                    sleep 1
-                    ((wait_time++))
-                done
-                if [[ -S "$desktop_socket_path" ]]; then
-                    log "Docker Desktop socket is now available at $desktop_socket. Testing connection..."
-                    # Test the socket by running a simple docker command
-                    if DOCKER_HOST="$desktop_socket" docker info >/dev/null 2>&1; then
-                        log "Docker Desktop socket is working. Querying containers..."
-                        local ps_args2=(docker ps)
-                        [[ -n "$status_filter" ]] && ps_args2+=(--filter "$status_filter")
-                        [[ -n "$FILTER_PATTERN" ]] && ps_args2+=(--filter "name=$FILTER_PATTERN")
-                        ps_args2+=(--format "$desktop_socket,{{.Names}}")
-                        if DOCKER_HOST="$desktop_socket" "${ps_args2[@]}" >> "$TEMP_STATE_FILE"; then
-                            log "Docker Desktop daemon query successful."
-                        else
-                            log "Warning: Could not query Docker Desktop daemon for user '$DOCKER_DESKTOP_USER'."
-                        fi
-                    else
-                        log "ERROR: Docker Desktop socket is present but not responding for user '$DOCKER_DESKTOP_USER'."
-                    fi
-                else
-                    log "ERROR: Docker Desktop process is running but socket did not appear at $desktop_socket after 10 seconds."
-                fi
-            else
-                log "Docker Desktop process is not running for user '$DOCKER_DESKTOP_USER'. Skipping Docker Desktop state save."
-            fi
-        else
-            log "Warning: Could not find UID for Docker Desktop user '$DOCKER_DESKTOP_USER'."
-        fi
+        source "$SCRIPT_DIR/docker-save-desktop.sh"
     fi
 
     if [[ $DRY_RUN -eq 1 ]]; then
@@ -225,81 +180,23 @@ restore_state() {
     local failed_count=0
 
 
-    # Track Docker Desktop socket readiness for each user/socket
-    declare -A desktop_socket_ready
-
     # Read each line, which is now in the format "socket_path,container_name".
     while IFS=, read -r socket_path container_name; do
         if [[ -n "$socket_path" && -n "$container_name" ]]; then
-            # Detect if this is a Docker Desktop socket
-            if [[ "$socket_path" =~ ^unix:///run/user/([0-9]+)/docker.sock$ ]]; then
-                user_id="${BASH_REMATCH[1]}"
-                desktop_socket_path="/run/user/${user_id}/docker.sock"
-                desktop_socket="unix:///run/user/${user_id}/docker.sock"
-                # Only check readiness once per socket
-                if [[ -z "${desktop_socket_ready[$desktop_socket]}" ]]; then
-                    # Check if Docker Desktop process is running for this user
-                    user_name=$(getent passwd "$user_id" | cut -d: -f1)
-                    if [[ -n "$user_name" && $(pgrep -u "$user_name" -f 'docker-desktop' 2>/dev/null) ]]; then
-                        log "Docker Desktop process detected for user '$user_name' (uid $user_id)."
-                        # Wait for the socket to appear (up to 10 seconds)
-                        wait_time=0
-                        while [[ ! -S "$desktop_socket_path" && $wait_time -lt 10 ]]; do
-                            sleep 1
-                            ((wait_time++))
-                        done
-                        if [[ -S "$desktop_socket_path" ]]; then
-                            log "Docker Desktop socket is now available at $desktop_socket. Testing connection..."
-                            if DOCKER_HOST="$desktop_socket" docker info >/dev/null 2>&1; then
-                                log "Docker Desktop socket is working. Proceeding with restore."
-                                desktop_socket_ready[$desktop_socket]=1
-                            else
-                                log "ERROR: Docker Desktop socket is present but not responding for user '$user_name'. Skipping restore for this socket."
-                                desktop_socket_ready[$desktop_socket]=0
-                                continue
-                            fi
-                        else
-                            log "ERROR: Docker Desktop process is running but socket did not appear at $desktop_socket after 10 seconds. Skipping restore for this socket."
-                            desktop_socket_ready[$desktop_socket]=0
-                            continue
-                        fi
-                    else
-                        log "Docker Desktop process is not running for user id $user_id. Skipping restore for this socket."
-                        desktop_socket_ready[$desktop_socket]=0
-                        continue
-                    fi
-                fi
-                # If readiness check failed, skip
-                if [[ "${desktop_socket_ready[$desktop_socket]}" != "1" ]]; then
-                    continue
-                fi
-            fi
-            log "Attempting to start container '$container_name' on daemon at '$socket_path'..."
-            # Set DOCKER_HOST to target the correct daemon for the start command.
-            local already_running=0
-            if [[ $FORCE -eq 0 ]]; then
-                # Check if already running
-                if DOCKER_HOST="$socket_path" docker inspect -f '{{.State.Running}}' "$container_name" 2>/dev/null | grep -q true; then
-                    log "Container '$container_name' is already running. Skipping."
-                    already_running=1
-                fi
-            fi
-            if [[ $already_running -eq 0 ]]; then
-                if [[ $DRY_RUN -eq 1 ]]; then
-                    log "[DRY RUN] Would start: $container_name on $socket_path"
+            if [[ "$socket_path" == unix:///var/run/docker.sock ]]; then
+                # System Docker restore (modularized)
+                if restore_system_container "$socket_path" "$container_name"; then
                     ((restored_count++))
                 else
-                    if DOCKER_HOST="$socket_path" docker start "$container_name"; then
-                        log "Successfully started: $container_name"
-                        ((restored_count++))
-                    else
-                        if [[ $SKIP_MISSING -eq 1 ]]; then
-                            log "Warning: Could not start container '$container_name' (may not exist). Skipping."
-                        else
-                            log "ERROR: Failed to start container '$container_name' on daemon at '$socket_path'."
-                        fi
-                        ((failed_count++))
-                    fi
+                    ((failed_count++))
+                fi
+            elif [[ "$socket_path" =~ ^unix:///run/user/([0-9]+)/docker.sock$ ]]; then
+                # Docker Desktop restore (modularized)
+                user_id="${BASH_REMATCH[1]}"
+                if restore_desktop_container "$user_id" "$container_name"; then
+                    ((restored_count++))
+                else
+                    ((failed_count++))
                 fi
             fi
         fi
