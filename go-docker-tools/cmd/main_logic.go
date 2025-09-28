@@ -8,6 +8,16 @@ import (
 )
 
 func MainLogic() {
+	case "manual-restore":
+		ManualRestoreCommand(conf, dockerHelper, logger, os.Args[2:])
+	case "manual-backup":
+		ManualBackupCommand(conf, dockerHelper, logger, os.Args[2:])
+	case "bootstrap":
+		BootstrapCommand(os.Args[2:])
+	case "fixsocket":
+		FixSocketCommand(os.Args[2:])
+	case "deploy":
+		DeployAutostartCommand(os.Args[2:])
 	conf, err := config.LoadConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
