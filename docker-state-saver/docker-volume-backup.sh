@@ -5,14 +5,10 @@
 
 set -o pipefail
 
-# --- Load Configuration ---
+# --- Load Configuration from the installed saver.conf ---
 CONFIG_FILE="/etc/docker-state-saver/saver.conf"
 if [[ -f "$CONFIG_FILE" ]]; then
-    # Use a simple parser for INI sections
-    DOCKER_DESKTOP_USER=$(sed -n -e 's/^\s*DOCKER_DESKTOP_USER\s*=\s*"\?\([^"]*\)"\?/\1/p' "$CONFIG_FILE")
-    BACKUP_DIR=$(sed -n -e 's/^\s*BACKUP_DIR\s*=\s*"\?\([^"]*\)"\?/\1/p' "$CONFIG_FILE")
-    BACKUP_ROTATION_COUNT=$(sed -n -e 's/^\s*BACKUP_ROTATION_COUNT\s*=\s*"\?\([^"]*\)"\?/\1/p' "$CONFIG_FILE")
-    LOG_FILE=$(sed -n -e 's/^\s*LOG_FILE\s*=\s*"\?\([^"]*\)"\?/\1/p' "$CONFIG_FILE")
+    source "$CONFIG_FILE"
 else
     echo "FATAL: Configuration file $CONFIG_FILE not found." >&2
     exit 1
