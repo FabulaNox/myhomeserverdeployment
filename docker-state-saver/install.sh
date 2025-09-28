@@ -62,16 +62,27 @@ chmod 755 "$UNINSTALL_SCRIPT_PATH"
 chmod 644 "$CONFIG_PATH"
 chmod 644 "$SERVICE_PATH"
 
+
 # 5. Auto-configure Docker Desktop user in the *installed* config file
-if [[ -n "$SUDO_USER" ]] && [[ "$SUDO_USER" != "root" ]]; then
-    echo "--> Detected sudo user '$SUDO_USER'. Configuring for Docker Desktop."
-    sed -i "s/DOCKER_DESKTOP_USER=\".*\"/DOCKER_DESKTOP_USER=\"$SUDO_USER\"/" "$CONFIG_PATH"
+# Always attempt integration: if DOCKER_DESKTOP_USER is <AUTO_DETECT> or empty, set to SUDO_USER or USER
+current_user="${SUDO_USER:-$USER}"
+if grep -q 'DOCKER_DESKTOP_USER="<AUTO_DETECT>"' "$CONFIG_PATH" || grep -q 'DOCKER_DESKTOP_USER=""' "$CONFIG_PATH"; then
+  echo "--> Setting Docker Desktop integration user to '$current_user'."
+  sed -i "s/DOCKER_DESKTOP_USER=\".*\"/DOCKER_DESKTOP_USER=\"$current_user\"/" "$CONFIG_PATH"
 else
-    echo "--> No sudo user detected. Clearing Docker Desktop user setting."
-    sed -i "s/DOCKER_DESKTOP_USER=\".*\"/DOCKER_DESKTOP_USER=\"\"/" "$CONFIG_PATH"
+  echo "--> Docker Desktop integration user already set in config."
 fi
 
-# 6. Reload systemd daemon and enable the new service
+
+# 6. Create sudo-level command for manual save and checkpoint-restore (docker-save)
+MANUAL_CMD_PATH="/usr/local/bin/docker-save"
+ln -sf "$BIN_PATH" "$MANUAL_CMD_PATH"
+chmod 755 "$MANUAL_CMD_PATH"
+echo "--> Created sudo-level command: $MANUAL_CMD_PATH"
+echo "    Usage: sudo docker-save manual-save"
+echo "           sudo docker-save checkpoint-restore -z"
+
+# 7. Reload systemd daemon and enable the new service
 echo "--> Reloading systemd and enabling service..."
 systemctl daemon-reload
 systemctl enable "$SERVICE_NAME"
