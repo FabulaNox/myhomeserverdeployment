@@ -33,6 +33,30 @@ if [[ "$1" == "-image" ]]; then
     exit 0
 fi
 
+# --- Command-line image capture and stop (no run) ---
+if [[ "$1" == "-image-capture-no-run" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" )" && pwd)"
+    CONFIG_FILE="$SCRIPT_DIR/docker_autostart.conf"
+    if [ -r "$CONFIG_FILE" ]; then
+        . "$CONFIG_FILE"
+    else
+        echo "[ERROR] Config file not found: $CONFIG_FILE" >&2
+        exit 2
+    fi
+    echo "[docker-restore -image-capture-no-run] Backing up and stopping all running containers..."
+    # Call the save_containers function (defined below)
+    save_containers
+    # Now stop all running containers
+    running=$(docker ps -q)
+    if [ -n "$running" ]; then
+        docker stop $running
+        echo "[docker-restore -image-capture-no-run] Stopped containers: $running"
+    else
+        echo "[docker-restore -image-capture-no-run] No running containers to stop."
+    fi
+    exit 0
+fi
+
 if [[ "$1" == "-m-restore" ]]; then
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" )" && pwd)"
     CONFIG_FILE="$SCRIPT_DIR/docker_autostart.conf"
