@@ -38,3 +38,6 @@ docker_autostart_bootstrap.service
 recover-docker-autostart.service
 
 # Add other test files as needed
+
+# Ignore Go vendor directory
+/vendor/
