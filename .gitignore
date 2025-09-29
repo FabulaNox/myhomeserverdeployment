@@ -25,3 +25,6 @@ recover-docker-autostart.service
 
 # Ignore Go vendor directory
 /vendor/
+
+# Ignore VS Code workspace settings
+.vscode/
