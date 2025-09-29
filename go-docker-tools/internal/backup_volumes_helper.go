@@ -76,18 +76,3 @@ func BackupVolumesHelper(conf *config.Config, dockerHelper *DockerHelper, logger
 	// }
 	return nil
 }
-
-func splitLines(s string) []string {
-	lines := []string{}
-	start := 0
-	for i, c := range s {
-		if c == '\n' {
-			lines = append(lines, s[start:i])
-			start = i + 1
-		}
-	}
-	if start < len(s) {
-		lines = append(lines, s[start:])
-	}
-	return lines
-}
