@@ -2,12 +2,14 @@ package cmd
 
 import (
 	"fmt"
-	"go-docker-tools/config"
-	"go-docker-tools/internal"
+	"log"
 	"os"
+
+	"github.com/FabulaNox/go-docker-tools/config"
+	"github.com/FabulaNox/go-docker-tools/internal"
 )
 
-func RestoreCommand(conf *config.Config, dockerHelper *internal.DockerHelper, logger *internal.Logger, args []string) {
+func RestoreCommand(conf *config.Config, dockerHelper *internal.DockerHelper, logger *log.Logger, args []string) {
 	lock := internal.NewLockfileHelper(conf.StateFile + ".lock")
 	if !lock.TryLock() {
 		logger.Println("Another restore is in progress.")

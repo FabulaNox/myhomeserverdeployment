@@ -2,12 +2,14 @@ package cmd
 
 import (
 	"fmt"
-	"go-docker-tools/config"
-	"go-docker-tools/internal"
+	"log"
 	"os"
+
+	"github.com/FabulaNox/go-docker-tools/config"
+	"github.com/FabulaNox/go-docker-tools/internal"
 )
 
-func SaveCommand(conf *config.Config, dockerHelper *internal.DockerHelper, logger *internal.Logger, args []string) {
+func SaveCommand(conf *config.Config, dockerHelper *internal.DockerHelper, logger *log.Logger, args []string) {
 	lock := internal.NewLockfileHelper(conf.StateFile + ".lock")
 	if !lock.TryLock() {
 		logger.Println("Another save is in progress.")
