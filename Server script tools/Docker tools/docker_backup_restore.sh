@@ -7,10 +7,34 @@
 # If running as root but Docker Desktop is running as user, use user's Docker context
 # If socket fix fails or no containers found, try Docker API over TCP (localhost:2375)
 detect_docker_context() {
+
+
     # If DOCKER_HOST is set, use it
     if [ -n "$DOCKER_HOST" ]; then
         export DOCKER_HOST
         return
+    fi
+
+    # If DOCKER_CONTEXT is set or active, extract the actual socket path and set DOCKER_HOST
+    ACTIVE_CONTEXT=$(docker context show 2>/dev/null)
+    if [ -n "$ACTIVE_CONTEXT" ]; then
+        CONTEXT_HOST=$(docker context inspect "$ACTIVE_CONTEXT" 2>/dev/null | jq -r '.[0].Endpoints.docker.Host // empty')
+        if [ -n "$CONTEXT_HOST" ] && [ "$CONTEXT_HOST" != "null" ]; then
+            export DOCKER_HOST="$CONTEXT_HOST"
+            echo "[docker-restore] Using Docker CLI context: $ACTIVE_CONTEXT (DOCKER_HOST=$DOCKER_HOST)"
+            # If context is desktop-linux, require the socket to be accessible
+            if [ "$ACTIVE_CONTEXT" = "desktop-linux" ]; then
+                # Only proceed if the socket is accessible
+                SOCKET_PATH="${CONTEXT_HOST#unix://}"
+                if [ ! -S "$SOCKET_PATH" ]; then
+                    echo "[docker-restore] ERROR: Docker Desktop socket ($SOCKET_PATH) is not accessible. Cannot proceed with backup/restore for desktop-linux context." >&2
+                    exit 3
+                fi
+            fi
+            return
+        else
+            echo "[docker-restore] Using Docker CLI context: $ACTIVE_CONTEXT (no Host found)"
+        fi
     fi
     # Try to detect Docker Desktop socket for user
     if [ -S "/var/run/docker.sock" ]; then
