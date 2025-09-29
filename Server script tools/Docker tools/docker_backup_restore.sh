@@ -95,35 +95,68 @@ save_containers() {
     CONFIG_BACKUP_DIR="$AUTOSCRIPT_DIR/container_configs"
     JSON_BACKUP_FILE="$AUTOSCRIPT_DIR/container_details.json"
     TMP_JSON_FILE="${JSON_BACKUP_FILE}.tmp.$$"
+    SOCKET_FIX_SCRIPT="$SCRIPT_DIR/fix_docker_socket.sh"
     mkdir -p "$IMAGE_BACKUP_DIR" "$CONFIG_BACKUP_DIR"
-    echo '[' > "$TMP_JSON_FILE"
-    first=1
-    for container in $(docker_ps_with_fallback); do
-        if [[ "$container" =~ ^[a-zA-Z0-9]+$ ]]; then
-            details=$(docker inspect "$container")
-            if [ $first -eq 0 ]; then
-                echo ',' >> "$TMP_JSON_FILE"
-            fi
-            echo "$details" | jq '.[0]' >> "$TMP_JSON_FILE"
-            first=0
-            image=$(docker inspect --format='{{.Config.Image}}' "$container")
-            name=$(docker inspect --format='{{.Name}}' "$container" | sed 's/\///')
-            if [ -n "$image" ]; then
-                backup_file="$IMAGE_BACKUP_DIR/${name}_${container}.tar"
-                docker save "$image" -o "$backup_file"
-                echo "[$(date)] Saved image $image for container $name ($container) to $backup_file"
-            fi
+
+    try_save() {
+        local containers_list
+        containers_list=$(docker_ps_with_fallback)
+        if [ -z "$containers_list" ]; then
+            return 1
         fi
-    done
-    echo ']' >> "$TMP_JSON_FILE"
-    # Validate JSON before moving
-    if jq . "$TMP_JSON_FILE" > /dev/null 2>&1; then
-        mv "$TMP_JSON_FILE" "$JSON_BACKUP_FILE"
-        echo "[docker-restore] Backup JSON written atomically."
-    else
-        echo "[docker-restore] ERROR: Backup JSON invalid, not saving corrupted file." >&2
-        rm -f "$TMP_JSON_FILE"
+        echo '[' > "$TMP_JSON_FILE"
+        first=1
+        for container in $containers_list; do
+            if [[ "$container" =~ ^[a-zA-Z0-9]+$ ]]; then
+                # Get details and extract name, id, and port dependencies
+                details=$(docker inspect "$container")
+                name=$(echo "$details" | jq -r '.[0].Name' | sed 's#^/##')
+                id=$(echo "$details" | jq -r '.[0].Id')
+                image=$(echo "$details" | jq -r '.[0].Config.Image')
+                # Collect port dependencies as an array of objects {container_port, host_port, protocol}
+                ports=$(echo "$details" | jq -c '.[0].NetworkSettings.Ports | to_entries | map(select(.value != null) | {container_port: .key, host_port: .value[0].HostPort, protocol: (.key | split("/")[1])})')
+                # Write a custom JSON object for each container
+                if [ $first -eq 0 ]; then
+                    echo ',' >> "$TMP_JSON_FILE"
+                fi
+                jq -n --arg name "$name" --arg id "$id" --arg image "$image" --argjson ports "$ports" '{ContainerName: $name, Id: $id, Image: $image, PortDependencies: $ports}' >> "$TMP_JSON_FILE"
+                first=0
+                if [ -n "$image" ]; then
+                    backup_file="$IMAGE_BACKUP_DIR/${name}_${container}.tar"
+                    docker save "$image" -o "$backup_file"
+                    echo "[$(date)] Saved image $image for container $name ($container) to $backup_file"
+                fi
+            fi
+        done
+        echo ']' >> "$TMP_JSON_FILE"
+        # Validate JSON before moving
+        if jq . "$TMP_JSON_FILE" > /dev/null 2>&1; then
+            mv "$TMP_JSON_FILE" "$JSON_BACKUP_FILE"
+            echo "[docker-restore] Backup JSON written atomically."
+            return 0
+        else
+            echo "[docker-restore] ERROR: Backup JSON invalid, not saving corrupted file." >&2
+            rm -f "$TMP_JSON_FILE"
+            return 2
+        fi
+    }
+
+    # First attempt
+    if try_save; then
+        return 0
     fi
+
+    # If failed, try to fix the socket and retry silently
+    if [ -x "$SOCKET_FIX_SCRIPT" ]; then
+        "$SOCKET_FIX_SCRIPT" >/dev/null 2>&1 || true
+        if try_save; then
+            return 0
+        fi
+    fi
+
+    # If still failed, show error
+    echo "[docker-restore] ERROR: Could not save containers after socket fix attempt." >&2
+    return 1
 }
 
 # --- Show backup containers function ---
@@ -260,20 +293,64 @@ restart_container() {
         exit 1
     fi
     echo "Restarting container: $cname"
-    docker restart "$cname"
-    if [ $? -eq 0 ]; then
-        echo "Container $cname restarted successfully."
+    SOCKET_FIX_SCRIPT="$SCRIPT_DIR/fix_docker_socket.sh"
+    try_restart() {
+        docker restart "$cname" 2>&1
+        return $?
+    }
+    if try_restart | grep -q 'Cannot connect to the Docker daemon'; then
+        # Try to fix the socket
+        if [ -x "$SOCKET_FIX_SCRIPT" ]; then
+            "$SOCKET_FIX_SCRIPT" >/dev/null 2>&1 || true
+        fi
+        if try_restart | grep -q 'Cannot connect to the Docker daemon'; then
+            # Try to start native Docker
+            sudo systemctl start docker || true
+            if try_restart | grep -q 'Cannot connect to the Docker daemon'; then
+                echo "Failed to restart container $cname. Docker daemon not available." >&2
+                exit 1
+            else
+                echo "Container $cname restarted successfully (after starting native Docker)."
+            fi
+        else
+            echo "Container $cname restarted successfully (after socket fix)."
+        fi
     else
-        echo "Failed to restart container $cname."
-        exit 1
+        echo "Container $cname restarted successfully."
     fi
 }
 
 # --- Restart all stopped containers ---
 restart_all_containers() {
     echo "Restarting all stopped containers..."
-    local stopped_ids
-    stopped_ids=$(docker ps -a -q -f status=exited)
+    SOCKET_FIX_SCRIPT="$SCRIPT_DIR/fix_docker_socket.sh"
+    try_list_stopped() {
+        docker ps -a -q -f status=exited 2>&1
+    }
+    stopped_ids=$(try_list_stopped)
+    if echo "$stopped_ids" | grep -q 'Cannot connect to the Docker daemon'; then
+        # Try to fix the socket
+        if [ -x "$SOCKET_FIX_SCRIPT" ]; then
+            "$SOCKET_FIX_SCRIPT" >/dev/null 2>&1 || true
+        fi
+        stopped_ids=$(try_list_stopped)
+        if echo "$stopped_ids" | grep -q 'Cannot connect to the Docker daemon'; then
+            # Try to start native Docker
+            sudo systemctl start docker || true
+            stopped_ids=$(try_list_stopped)
+            if echo "$stopped_ids" | grep -q 'Cannot connect to the Docker daemon'; then
+                # Final fallback: try restore_from_json.sh
+                RESTORE_JSON_SCRIPT="$SCRIPT_DIR/restore_from_json.sh"
+                if [ -x "$RESTORE_JSON_SCRIPT" ]; then
+                    echo "[docker-restore] All restart attempts failed. Attempting full restore from backup JSON..."
+                    sudo "$RESTORE_JSON_SCRIPT"
+                else
+                    echo "No stopped containers to restart. Docker daemon not available, and restore_from_json.sh not found or not executable." >&2
+                fi
+                return
+            fi
+        fi
+    fi
     if [ -z "$stopped_ids" ]; then
         echo "No stopped containers to restart."
         return
@@ -456,16 +533,17 @@ if [[ "$1" == "-m-restore" ]]; then
     count=$(jq length "$JSON_BACKUP_FILE")
     echo "[docker-restore -m-restore] Containers/images to be restored: ($count total)"
     for idx in $(seq 0 $((count-1))); do
-        name=$(jq -r ".[$idx].ContainerName" "$JSON_BACKUP_FILE")
-        image=$(jq -r ".[$idx].Image" "$JSON_BACKUP_FILE")
-        status=$(jq -r ".[$idx].LastStatus" "$JSON_BACKUP_FILE")
+        # Try multiple possible fields for name and image
+        name=$(jq -r ".[$idx].ContainerName // .[$idx].Name // null" "$JSON_BACKUP_FILE" | sed 's#^/##')
+        image=$(jq -r ".[$idx].Image // .[$idx].Config.Image // null" "$JSON_BACKUP_FILE")
+        status=$(jq -r ".[$idx].LastStatus // .[$idx].State.Status // null" "$JSON_BACKUP_FILE")
         echo "[$((idx+1))] $name | Image: $image | LastStatus: $status"
     done
     echo "--- Starting manual restore (dry run, no containers will be started) ---"
     for idx in $(seq 0 $((count-1))); do
-        name=$(jq -r ".[$idx].ContainerName" "$JSON_BACKUP_FILE")
-        image=$(jq -r ".[$idx].Image" "$JSON_BACKUP_FILE")
-        status=$(jq -r ".[$idx].LastStatus" "$JSON_BACKUP_FILE")
+        name=$(jq -r ".[$idx].ContainerName // .[$idx].Name // null" "$JSON_BACKUP_FILE" | sed 's#^/##')
+        image=$(jq -r ".[$idx].Image // .[$idx].Config.Image // null" "$JSON_BACKUP_FILE")
+        status=$(jq -r ".[$idx].LastStatus // .[$idx].State.Status // null" "$JSON_BACKUP_FILE")
         echo "Restoring: $name (image: $image, last status: $status) ..."
         sleep 1
         echo "[OK] $name ready for restore."
