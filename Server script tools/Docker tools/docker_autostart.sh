@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # --- Command-line restore interface ---
-if [[ "$1" == "restore" && "$2" == "image" ]]; then
+if [[ "$1" == "-image" ]]; then
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" )" && pwd)"
     CONFIG_FILE="$SCRIPT_DIR/docker_autostart.conf"
     if [ -r "$CONFIG_FILE" ]; then
@@ -12,7 +12,7 @@ if [[ "$1" == "restore" && "$2" == "image" ]]; then
     fi
     IMAGE_BACKUP_DIR="$AUTOSCRIPT_DIR/image_backups"
     CONFIG_BACKUP_DIR="$AUTOSCRIPT_DIR/container_configs"
-    echo "[docker-restore image] Listing available images and containers for restore:"
+    echo "[docker-restore -image] Listing available images and containers for restore:"
     echo "--- Images in $IMAGE_BACKUP_DIR ---"
     if [ -d "$IMAGE_BACKUP_DIR" ]; then
         ls -1 "$IMAGE_BACKUP_DIR"/*.tar 2>/dev/null || echo "[None found]"
@@ -33,7 +33,7 @@ if [[ "$1" == "restore" && "$2" == "image" ]]; then
     exit 0
 fi
 
-if [[ "$1" == "restore" && "$2" == "manual" ]]; then
+if [[ "$1" == "-m-restore" ]]; then
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" )" && pwd)"
     CONFIG_FILE="$SCRIPT_DIR/docker_autostart.conf"
     if [ -r "$CONFIG_FILE" ]; then
@@ -44,11 +44,11 @@ if [[ "$1" == "restore" && "$2" == "manual" ]]; then
     fi
     JSON_BACKUP_FILE="$AUTOSCRIPT_DIR/container_details.json"
     if [ ! -f "$JSON_BACKUP_FILE" ]; then
-        echo "[docker-restore manual] No backup file found at $JSON_BACKUP_FILE" >&2
+        echo "[docker-restore -m-restore] No backup file found at $JSON_BACKUP_FILE" >&2
         exit 1
     fi
     count=$(jq length "$JSON_BACKUP_FILE")
-    echo "[docker-restore manual] Containers/images to be restored: ($count total)"
+    echo "[docker-restore -m-restore] Containers/images to be restored: ($count total)"
     for idx in $(seq 0 $((count-1))); do
         name=$(jq -r ".[$idx].ContainerName" "$JSON_BACKUP_FILE")
         image=$(jq -r ".[$idx].Image" "$JSON_BACKUP_FILE")
@@ -64,7 +64,7 @@ if [[ "$1" == "restore" && "$2" == "manual" ]]; then
         sleep 1
         echo "[OK] $name ready for restore."
     done
-    echo "[docker-restore manual] Restore preview complete."
+    echo "[docker-restore -m-restore] Restore preview complete."
     exit 0
 fi
 # Deployment: Use deploy_docker_autostart.sh for setup (automates copying, permissions, and service restart)
