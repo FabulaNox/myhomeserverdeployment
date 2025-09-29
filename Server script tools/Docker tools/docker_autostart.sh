@@ -1,4 +1,72 @@
 #!/bin/bash
+
+# --- Command-line restore interface ---
+if [[ "$1" == "restore" && "$2" == "image" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" )" && pwd)"
+    CONFIG_FILE="$SCRIPT_DIR/docker_autostart.conf"
+    if [ -r "$CONFIG_FILE" ]; then
+        . "$CONFIG_FILE"
+    else
+        echo "[ERROR] Config file not found: $CONFIG_FILE" >&2
+        exit 2
+    fi
+    IMAGE_BACKUP_DIR="$AUTOSCRIPT_DIR/image_backups"
+    CONFIG_BACKUP_DIR="$AUTOSCRIPT_DIR/container_configs"
+    echo "[docker-restore image] Listing available images and containers for restore:"
+    echo "--- Images in $IMAGE_BACKUP_DIR ---"
+    if [ -d "$IMAGE_BACKUP_DIR" ]; then
+        ls -1 "$IMAGE_BACKUP_DIR"/*.tar 2>/dev/null || echo "[None found]"
+    else
+        echo "[None found]"
+    fi
+    echo "--- Container configs in $CONFIG_BACKUP_DIR ---"
+    if [ -d "$CONFIG_BACKUP_DIR" ]; then
+        for f in "$CONFIG_BACKUP_DIR"/*.json; do
+            [ -e "$f" ] || continue
+            cname=$(jq -r '.[0].Name' "$f" | sed 's/^\///')
+            img=$(jq -r '.[0].Config.Image' "$f")
+            echo "Container: $cname | Image: $img | Config: $f"
+        done
+    else
+        echo "[None found]"
+    fi
+    exit 0
+fi
+
+if [[ "$1" == "restore" && "$2" == "manual" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" )" && pwd)"
+    CONFIG_FILE="$SCRIPT_DIR/docker_autostart.conf"
+    if [ -r "$CONFIG_FILE" ]; then
+        . "$CONFIG_FILE"
+    else
+        echo "[ERROR] Config file not found: $CONFIG_FILE" >&2
+        exit 2
+    fi
+    JSON_BACKUP_FILE="$AUTOSCRIPT_DIR/container_details.json"
+    if [ ! -f "$JSON_BACKUP_FILE" ]; then
+        echo "[docker-restore manual] No backup file found at $JSON_BACKUP_FILE" >&2
+        exit 1
+    fi
+    count=$(jq length "$JSON_BACKUP_FILE")
+    echo "[docker-restore manual] Containers/images to be restored: ($count total)"
+    for idx in $(seq 0 $((count-1))); do
+        name=$(jq -r ".[$idx].ContainerName" "$JSON_BACKUP_FILE")
+        image=$(jq -r ".[$idx].Image" "$JSON_BACKUP_FILE")
+        status=$(jq -r ".[$idx].LastStatus" "$JSON_BACKUP_FILE")
+        echo "[$((idx+1))] $name | Image: $image | LastStatus: $status"
+    done
+    echo "--- Starting manual restore (dry run, no containers will be started) ---"
+    for idx in $(seq 0 $((count-1))); do
+        name=$(jq -r ".[$idx].ContainerName" "$JSON_BACKUP_FILE")
+        image=$(jq -r ".[$idx].Image" "$JSON_BACKUP_FILE")
+        status=$(jq -r ".[$idx].LastStatus" "$JSON_BACKUP_FILE")
+        echo "Restoring: $name (image: $image, last status: $status) ..."
+        sleep 1
+        echo "[OK] $name ready for restore."
+    done
+    echo "[docker-restore manual] Restore preview complete."
+    exit 0
+fi
 # Deployment: Use deploy_docker_autostart.sh for setup (automates copying, permissions, and service restart)
 # Stop: sudo systemctl stop docker-autostart.service or pkill -f docker_autostart.sh
 if [ "$EUID" -ne 0 ]; then
