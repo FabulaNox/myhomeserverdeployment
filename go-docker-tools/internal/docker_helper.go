@@ -2,7 +2,9 @@ package internal
 
 import (
 	"context"
+
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 )
 
@@ -34,5 +36,5 @@ func (d *DockerHelper) ListAllContainers() ([]types.Container, error) {
 
 // StopContainerByID stops a container by its ID
 func (d *DockerHelper) StopContainerByID(id string) error {
-	return d.cli.ContainerStop(context.Background(), id, nil)
+	return d.cli.ContainerStop(context.Background(), id, container.StopOptions{})
 }

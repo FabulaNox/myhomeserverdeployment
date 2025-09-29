@@ -4,6 +4,11 @@ import (
 	"github.com/gofrs/flock"
 )
 
+// NewLockfileHelper is an alias for NewLockfile for compatibility with cmd package
+func NewLockfileHelper(path string) *Lockfile {
+	return NewLockfile(path)
+}
+
 type Lockfile struct {
 	fl *flock.Flock
 }

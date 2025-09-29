@@ -3,16 +3,18 @@ package cmd
 import (
 	"bufio"
 	"fmt"
-	"go-docker-tools/config"
-	"go-docker-tools/internal"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/FabulaNox/go-docker-tools/config"
+	"github.com/FabulaNox/go-docker-tools/internal"
 )
 
 // ManualRestoreCommand lists available manual backups and restores from a selected one
-func ManualRestoreCommand(conf *config.Config, dockerHelper *internal.DockerHelper, logger *internal.Logger, args []string) {
+func ManualRestoreCommand(conf *config.Config, dockerHelper *internal.DockerHelper, logger *log.Logger, args []string) {
 	manualDir := filepath.Join(conf.BackupDir, "manual_backups")
 	files, err := filepath.Glob(filepath.Join(manualDir, "manual_*.tar.gz"))
 	if err != nil || len(files) == 0 {

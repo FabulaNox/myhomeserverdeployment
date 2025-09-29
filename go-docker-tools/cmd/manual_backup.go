@@ -2,15 +2,17 @@ package cmd
 
 import (
 	"fmt"
-	"go-docker-tools/config"
-	"go-docker-tools/internal"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/FabulaNox/go-docker-tools/config"
+	"github.com/FabulaNox/go-docker-tools/internal"
 )
 
 // ManualBackupCommand creates a user-initiated backup and manages manual backup rotation
-func ManualBackupCommand(conf *config.Config, dockerHelper *internal.DockerHelper, logger *internal.Logger, args []string) {
+func ManualBackupCommand(conf *config.Config, dockerHelper *internal.DockerHelper, logger *log.Logger, args []string) {
 	manualDir := filepath.Join(conf.BackupDir, "manual_backups")
 	if err := os.MkdirAll(manualDir, 0755); err != nil {
 		logger.Println("[ERROR] Failed to create manual backup dir:", err)
