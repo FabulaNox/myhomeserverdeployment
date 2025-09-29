@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/FabulaNox/go-docker-tools/internal"
+
 	"github.com/FabulaNox/go-docker-tools/config"
 )
 
@@ -16,14 +18,17 @@ func SetupCommand() {
 		err = os.WriteFile("saver.yaml", defaultConfig, 0644)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "[ERROR] Failed to write default config:", err)
+			internal.SendSlackNotification("[ERROR] Failed to write default config: " + err.Error())
 			os.Exit(2)
 		}
 		fmt.Println("[NOTIFY] Default config created. Please review and edit as needed.")
+		internal.SendSlackNotification("[NOTIFY] Default config created. Please review and edit as needed.")
 		return
 	}
 	// Validate config fields (basic)
 	if conf.StateDir == "" || conf.BackupDir == "" {
 		fmt.Fprintln(os.Stderr, "[ERROR] Config missing required fields: STATE_DIR or BACKUP_DIR")
+		internal.SendSlackNotification("[ERROR] Config missing required fields: STATE_DIR or BACKUP_DIR")
 		os.Exit(3)
 	}
 	// Ensure directories exist
@@ -34,8 +39,10 @@ func SetupCommand() {
 		}
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			fmt.Fprintf(os.Stderr, "[ERROR] Failed to create directory %s: %v\n", dir, err)
+			internal.SendSlackNotification("[ERROR] Failed to create directory " + dir + ": " + err.Error())
 			os.Exit(4)
 		}
 	}
 	fmt.Println("[NOTIFY] Setup complete. All required directories exist.")
+	internal.SendSlackNotification("[NOTIFY] Setup complete. All required directories exist.")
 }

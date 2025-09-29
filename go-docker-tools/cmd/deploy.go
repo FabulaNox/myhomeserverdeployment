@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"github.com/FabulaNox/go-docker-tools/internal"
 )
 
 // DeployAutostartCommand installs or uninstalls autostart integration (systemd or cron)
@@ -48,6 +49,7 @@ func installWindowsService() {
 	exe, err := os.Executable()
 	if err != nil {
 		fmt.Println("[ERROR] Could not determine executable path:", err)
+		internal.SendSlackNotification("[ERROR] Could not determine executable path: " + err.Error())
 		os.Exit(1)
 	}
 	serviceName := "GoDockerTools"
@@ -101,10 +103,11 @@ func installLaunchd() {
 	userHome, err := os.UserHomeDir()
 	if err != nil {
 		fmt.Println("[ERROR] Could not determine user home directory:", err)
+		internal.SendSlackNotification("[ERROR] Could not determine user home directory: " + err.Error())
 		os.Exit(2)
 	}
-	plistPath := filepath.Join(userHome, "Library", "LaunchAgents", "com.godockertools.autostart.plist")
-	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+		plistPath := filepath.Join(userHome, "Library", "LaunchAgents", "com.godockertools.autostart.plist")
+		plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -120,6 +123,8 @@ func installLaunchd() {
 </dict>
 </plist>
 `, exe)
+		msg := fmt.Sprintf("[NOTIFY] Launchd plist will be written to: %s", plistPath)
+		internal.SendSlackNotification(msg)
 	if err := os.WriteFile(plistPath, []byte(plist), 0644); err != nil {
 		fmt.Println("[ERROR] Failed to write launchd plist:", err)
 		os.Exit(3)

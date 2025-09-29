@@ -19,6 +19,7 @@ func ManualRestoreCommand(conf *config.Config, dockerHelper *internal.DockerHelp
 	files, err := filepath.Glob(filepath.Join(manualDir, "manual_*.tar.gz"))
 	if err != nil || len(files) == 0 {
 		fmt.Println("[ERROR] No manual backups found.")
+		internal.SendSlackNotification("[ERROR] No manual backups found.")
 		os.Exit(1)
 	}
 	sort.Strings(files)
@@ -57,8 +58,11 @@ func ManualRestoreCommand(conf *config.Config, dockerHelper *internal.DockerHelp
 	if err := internal.RestoreVolumesFromFile(conf, dockerHelper, logger, backupFile); err != nil {
 		logger.Println("[ERROR] Manual restore failed:", err)
 		fmt.Println("[ERROR] Manual restore failed:", err)
+		internal.SendSlackNotification("[ERROR] Manual restore failed: " + err.Error())
 		os.Exit(3)
 	}
+	msg := fmt.Sprintf("[NOTIFY] Manual restore completed: %s", backupFile)
 	logger.Println("[USER] Manual restore completed:", backupFile)
-	fmt.Println("[NOTIFY] Manual restore completed:", backupFile)
+	fmt.Println(msg)
+	internal.SendSlackNotification(msg)
 }
