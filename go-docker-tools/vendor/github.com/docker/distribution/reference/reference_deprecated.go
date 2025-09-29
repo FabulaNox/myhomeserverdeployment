@@ -118,8 +118,38 @@ func Path(named reference.Named) (name string) {
 // is returned as name
 //
 // Deprecated: Use [reference.Domain] or [reference.Path].
+// SplitHostname splits a named reference into a hostname and name string.
+// This is a local patch to avoid missing reference.SplitHostname.
 func SplitHostname(named reference.Named) (string, string) {
-	return reference.SplitHostname(named)
+	// Minimal implementation: treat everything before first '/' as hostname if it contains a '.' or ':', else empty hostname.
+	name := named.Name()
+	i := 0
+	for j := 0; j < len(name); j++ {
+		if name[j] == '/' {
+			i = j
+			break
+		}
+	}
+	hostname := ""
+	remainder := name
+	if i > 0 {
+		candidate := name[:i]
+		if containsDotOrColon(candidate) || candidate == "localhost" {
+			hostname = candidate
+			remainder = name[i+1:]
+		}
+	}
+	return hostname, remainder
+}
+
+// containsDotOrColon reports whether s contains a '.' or ':'.
+func containsDotOrColon(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '.' || s[i] == ':' {
+			return true
+		}
+	}
+	return false
 }
 
 // Parse parses s and returns a syntactically valid Reference.
