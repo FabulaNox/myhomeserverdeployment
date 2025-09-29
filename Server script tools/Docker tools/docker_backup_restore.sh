@@ -65,21 +65,22 @@ else
     exit 2
 fi
 
-# --- Save containers function (for backup) ---
+# --- Save containers function (for backup, atomic write) ---
 save_containers() {
     IMAGE_BACKUP_DIR="$AUTOSCRIPT_DIR/image_backups"
     CONFIG_BACKUP_DIR="$AUTOSCRIPT_DIR/container_configs"
     JSON_BACKUP_FILE="$AUTOSCRIPT_DIR/container_details.json"
+    TMP_JSON_FILE="${JSON_BACKUP_FILE}.tmp.$$"
     mkdir -p "$IMAGE_BACKUP_DIR" "$CONFIG_BACKUP_DIR"
-    echo '[' > "$JSON_BACKUP_FILE"
+    echo '[' > "$TMP_JSON_FILE"
     first=1
     for container in $(docker_ps_with_fallback); do
         if [[ "$container" =~ ^[a-zA-Z0-9]+$ ]]; then
             details=$(docker inspect "$container")
             if [ $first -eq 0 ]; then
-                echo ',' >> "$JSON_BACKUP_FILE"
+                echo ',' >> "$TMP_JSON_FILE"
             fi
-            echo "$details" | jq '.[0]' >> "$JSON_BACKUP_FILE"
+            echo "$details" | jq '.[0]' >> "$TMP_JSON_FILE"
             first=0
             image=$(docker inspect --format='{{.Config.Image}}' "$container")
             name=$(docker inspect --format='{{.Name}}' "$container" | sed 's/\///')
@@ -90,7 +91,15 @@ save_containers() {
             fi
         fi
     done
-    echo ']' >> "$JSON_BACKUP_FILE"
+    echo ']' >> "$TMP_JSON_FILE"
+    # Validate JSON before moving
+    if jq . "$TMP_JSON_FILE" > /dev/null 2>&1; then
+        mv "$TMP_JSON_FILE" "$JSON_BACKUP_FILE"
+        echo "[docker-restore] Backup JSON written atomically."
+    else
+        echo "[docker-restore] ERROR: Backup JSON invalid, not saving corrupted file." >&2
+        rm -f "$TMP_JSON_FILE"
+    fi
 }
 
 # --- Show backup containers function ---
@@ -124,21 +133,21 @@ fi
 full_uninstall() {
     echo "[docker-restore -full-uninstall] Removing all deployment traces (except source .sh files)..."
     # Remove symlink if exists
-    if [ -L /usr/local/bin/docker-restore ]; then
-        sudo rm /usr/local/bin/docker-restore && echo "Removed symlink /usr/local/bin/docker-restore"
+    if [ -L "$DOCKER_RESTORE_BIN" ]; then
+        sudo rm "$DOCKER_RESTORE_BIN" && echo "Removed symlink $DOCKER_RESTORE_BIN"
     fi
     # Remove systemd service files if exist
-    if [ -f /etc/systemd/system/docker-autostart.service ]; then
-        sudo systemctl stop docker-autostart.service 2>/dev/null
-        sudo rm /etc/systemd/system/docker-autostart.service && echo "Removed systemd unit docker-autostart.service"
+    if [ -f "$SYSTEMD_SERVICE" ]; then
+        sudo systemctl stop $(basename "$SYSTEMD_SERVICE") 2>/dev/null
+        sudo rm "$SYSTEMD_SERVICE" && echo "Removed systemd unit $SYSTEMD_SERVICE"
     fi
-    if [ -f /etc/systemd/system/docker-backup-restore@.service ]; then
-        sudo systemctl stop docker-backup-restore@.service 2>/dev/null
-        sudo rm /etc/systemd/system/docker-backup-restore@.service && echo "Removed systemd unit docker-backup-restore@.service"
+    if [ -f "$ONBOOT_SERVICE" ]; then
+        sudo systemctl stop $(basename "$ONBOOT_SERVICE") 2>/dev/null
+        sudo rm "$ONBOOT_SERVICE" && echo "Removed systemd unit $ONBOOT_SERVICE"
     fi
     # Remove autoscript data
-    if [ -d /usr/autoscript ]; then
-        sudo rm -rf /usr/autoscript && echo "Removed /usr/autoscript directory"
+    if [ -d "$AUTOSCRIPT_DIR" ]; then
+        sudo rm -rf "$AUTOSCRIPT_DIR" && echo "Removed $AUTOSCRIPT_DIR directory"
     fi
     echo "[docker-restore -full-uninstall] Uninstall complete."
 }
@@ -286,6 +295,10 @@ fi
 
 # Use a separate lockfile for backup/restore
 BACKUP_LOCKFILE="${AUTOSCRIPT_DIR}/backup_restore.lock"
+# Remove stale lockfile if not held by any process
+if [ -f "$BACKUP_LOCKFILE" ]; then
+    lsof "$BACKUP_LOCKFILE" >/dev/null 2>&1 || rm -f "$BACKUP_LOCKFILE"
+fi
 acquire_backup_lock() {
     exec 9>"$BACKUP_LOCKFILE"
     flock -n 9 || { echo "[ERROR] Another backup/restore is running."; exit 1; }
@@ -299,7 +312,7 @@ acquire_backup_lock
 trap release_backup_lock EXIT
 
 # --- Command-line run restore (actually start containers) ---
-# --- Restore containers using correct fields from docker inspect JSON ---
+# --- Transactional restore: rollback on failure ---
 if [[ "$1" == "-run-restore" ]]; then
     echo "[docker-restore -run-restore] Cleaning Docker field before restore..."
     clean_docker_field
@@ -308,8 +321,15 @@ if [[ "$1" == "-run-restore" ]]; then
         echo "[docker-restore -run-restore] No backup file found at $JSON_BACKUP_FILE" >&2
         exit 1
     fi
+    # Validate JSON before restore
+    if ! jq . "$JSON_BACKUP_FILE" > /dev/null 2>&1; then
+        echo "[docker-restore -run-restore] ERROR: Backup JSON is invalid or corrupted. Aborting restore." >&2
+        exit 2
+    fi
     count=$(jq length "$JSON_BACKUP_FILE")
     echo "[docker-restore -run-restore] Restoring $count containers/images from backup..."
+    started_containers=()
+    restore_failed=0
     for idx in $(seq 0 $((count-1))); do
         name=$(jq -r ".[$idx].Name" "$JSON_BACKUP_FILE" | sed 's#^/##')
         image=$(jq -r ".[$idx].Config.Image" "$JSON_BACKUP_FILE")
@@ -354,15 +374,35 @@ if [[ "$1" == "-run-restore" ]]; then
         if [ -n "$image" ]; then
             args+=( "$image" )
             echo "[docker-restore -run-restore] Running: docker ${args[*]}"
-            docker "${args[@]}"
-            echo "[OK] $name started from image $image."
+            cid=$(docker "${args[@]}" 2>/dev/null)
+            if [ -n "$cid" ]; then
+                started_containers+=("$cid")
+                echo "[OK] $name started from image $image."
+            else
+                echo "[ERROR] Failed to start container $name from image $image." >&2
+                restore_failed=1
+                break
+            fi
         else
             echo "[docker-restore -run-restore] Skipped $name: missing image name."
         fi
     done
-    echo "[docker-restore -run-restore] Restore complete."
+    if [ $restore_failed -eq 1 ]; then
+        echo "[docker-restore -run-restore] ERROR: Restore failed, rolling back started containers..." >&2
+        for cid in "${started_containers[@]}"; do
+            docker rm -f "$cid" 2>/dev/null || true
+        done
+        echo "[docker-restore -run-restore] Rollback complete. No containers restored."
+        exit 3
+    fi
+    echo "[docker-restore -run-restore] Restore complete. All containers restored successfully."
     exit 0
 fi
+# --- System hooks: backup on shutdown, restore on startup ---
+# To enable automatic backup on shutdown:
+#   sudo ln -s /usr/local/bin/docker-restore /lib/systemd/system-shutdown/docker-backup
+# To enable automatic restore on startup:
+#   Add a systemd service that runs: sudo docker-restore -run-restore
 # Add to usage/help
     echo "  -clean-field              Stop/remove all containers, prune networks/volumes (CAUTION: destructive)"
 
