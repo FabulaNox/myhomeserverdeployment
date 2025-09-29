@@ -19,24 +19,30 @@ func BackupCommand(conf *config.Config, dockerHelper *internal.DockerHelper, log
 	lock := internal.NewLockfileHelper(conf.BackupDir + ".lock")
 	if !lock.TryLock() {
 		logger.Println("Another backup is in progress.")
+		internal.SendSlackNotification("[ERROR] Another backup is in progress.")
 		internal.RunHook(conf.HookScript, "backup_locked")
 		os.Exit(10)
 	}
 	defer lock.Unlock()
 
 	internal.RunHook(conf.HookScript, "pre_backup")
-	fmt.Println("[NOTIFY] Starting backup... (dry-run:", dryRun, ")")
+	msg := fmt.Sprintf("[NOTIFY] Starting backup... (dry-run: %v)", dryRun)
+	fmt.Println(msg)
+	internal.SendSlackNotification(msg)
 	if dryRun {
 		logger.Println("[DRY-RUN] Would perform backup and rotation.")
 		fmt.Println("[DRY-RUN] Would perform backup and rotation.")
+		internal.SendSlackNotification("[DRY-RUN] Would perform backup and rotation.")
 		os.Exit(0)
 	}
 	if err := internal.BackupVolumesHelper(conf, dockerHelper, logger); err != nil {
 		logger.Println("Backup failed:", err)
+		internal.SendSlackNotification("[ERROR] Backup failed: " + err.Error())
 		internal.RunHook(conf.HookScript, "backup_failed")
 		os.Exit(11)
 	}
 	logger.Println("Backup completed successfully.")
 	fmt.Println("[NOTIFY] Backup completed successfully.")
+	internal.SendSlackNotification("[NOTIFY] Backup completed successfully.")
 	internal.RunHook(conf.HookScript, "post_backup")
 }

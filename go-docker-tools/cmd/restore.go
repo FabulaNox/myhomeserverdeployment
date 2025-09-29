@@ -13,6 +13,7 @@ func RestoreCommand(conf *config.Config, dockerHelper *internal.DockerHelper, lo
 	lock := internal.NewLockfileHelper(conf.StateFile + ".lock")
 	if !lock.TryLock() {
 		logger.Println("Another restore is in progress.")
+		internal.SendSlackNotification("[ERROR] Another restore is in progress.")
 		return
 	}
 	defer lock.Unlock()
@@ -20,8 +21,11 @@ func RestoreCommand(conf *config.Config, dockerHelper *internal.DockerHelper, lo
 	restored, failed, err := internal.RestoreStateHelper(conf.StateFile, dockerHelper, logger)
 	if err != nil {
 		logger.Println("Failed to restore state:", err)
+		internal.SendSlackNotification("[ERROR] Failed to restore state: " + err.Error())
 		os.Exit(1)
 	}
-	logger.Printf("Restore complete. Started: %d, Failed: %d.", restored, failed)
-	fmt.Printf("Restore complete. Started: %d, Failed: %d.\n", restored, failed)
+	msg := fmt.Sprintf("Restore complete. Started: %d, Failed: %d.", restored, failed)
+	logger.Print(msg)
+	fmt.Println(msg)
+	internal.SendSlackNotification("[NOTIFY] " + msg)
 }

@@ -22,6 +22,7 @@ func ExitCommand(conf *config.Config, dockerHelper *internal.DockerHelper, logge
 	containers, err := dockerHelper.ListAllContainers()
 	if err != nil {
 		logger.Println("Failed to list containers:", err)
+		internal.SendSlackNotification("[ERROR] Failed to list containers: " + err.Error())
 		internal.RunHook(conf.HookScript, "exit_failed")
 		os.Exit(31)
 	}
@@ -34,16 +35,21 @@ func ExitCommand(conf *config.Config, dockerHelper *internal.DockerHelper, logge
 				count++
 				continue
 			}
-			err := dockerHelper.StopContainerByID(c.ID)
-			if err != nil {
-				logger.Printf("Failed to stop container %s: %v", c.Names[0], err)
-				continue
-			}
-			logger.Printf("Stopped container: %s", c.Names[0])
-			fmt.Printf("[NOTIFY] Stopped container: %s\n", c.Names[0])
-			count++
+				err := dockerHelper.StopContainerByID(c.ID)
+				if err != nil {
+					logger.Printf("Failed to stop container %s: %v", c.Names[0], err)
+					internal.SendSlackNotification("[ERROR] Failed to stop container " + c.Names[0] + ": " + err.Error())
+					continue
+				}
+				logger.Printf("Stopped container: %s", c.Names[0])
+				msg := fmt.Sprintf("[NOTIFY] Stopped container: %s", c.Names[0])
+				fmt.Println(msg)
+				internal.SendSlackNotification(msg)
+				count++
 		}
 	}
-	fmt.Printf("[NOTIFY] Autostopped %d containers.\n", count)
+	msg := fmt.Sprintf("[NOTIFY] Autostopped %d containers.", count)
+	fmt.Println(msg)
+	internal.SendSlackNotification(msg)
 	internal.RunHook(conf.HookScript, "post_exit")
 }

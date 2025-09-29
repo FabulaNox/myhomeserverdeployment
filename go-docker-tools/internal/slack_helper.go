@@ -1,10 +1,10 @@
 package internal
 
 import (
-	"fmt"
-	"os"
-	"net/http"
 	"bytes"
+	"fmt"
+	"net/http"
+	"os"
 )
 
 // SendSlackNotification sends a message to a Slack webhook if SLACK_WEBHOOK_URL is set
