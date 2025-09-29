@@ -1,3 +1,74 @@
+# --- Create docker-restore-onboot systemd service dynamically ---
+# --- Load config early for all path variables ---
+CONFIG_FILE="$SCRIPT_SRC/docker_autostart.conf"
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "[INFO] Config file not found: $CONFIG_FILE. Creating with defaults."
+    cat > "$CONFIG_FILE" <<EOF
+# Docker host socket (for CLI and Desktop compatibility)
+DOCKER_HOST="unix:///var/run/docker.sock"
+# Path to systemd service file (for bootstrap)
+SERVICE_FILE="/etc/systemd/system/docker-autostart.service"
+# Directory for all script data/logs/lockfiles
+AUTOSCRIPT_DIR="/usr/autoscript"
+# List of running containers (updated by script)
+CONTAINER_LIST="\$AUTOSCRIPT_DIR/running_containers.txt"
+# Error log file
+ERROR_LOG="\$AUTOSCRIPT_DIR/error.log"
+# Health log file
+HEALTH_LOG="\$AUTOSCRIPT_DIR/container_health.log"
+# Lockfile for duplicate prevention
+LOCKFILE="\$AUTOSCRIPT_DIR/docker_autostart.lock"
+# Image backup directory
+IMAGE_BACKUP_DIR="\$AUTOSCRIPT_DIR/image_backups"
+# Container config backup directory
+CONFIG_BACKUP_DIR="\$AUTOSCRIPT_DIR/container_configs"
+# Unified JSON backup file
+JSON_BACKUP_FILE="\$AUTOSCRIPT_DIR/container_details.json"
+# Restore status log file
+RESTORE_LOG="\$AUTOSCRIPT_DIR/restore_status.log"
+# Systemd service file path
+SYSTEMD_SERVICE="/etc/systemd/system/docker-autostart.service"
+# Path to main script (must match systemd ExecStart)
+BIN_PATH="/usr/local/bin/docker_autostart.sh"
+# Path to lockfile script
+LOCKFILE_SCRIPT="/usr/local/bin/lockfile.sh"
+# Path to deploy script
+DEPLOY_SCRIPT="/usr/local/bin/deploy_docker_autostart.sh"
+# Path to main autostart script (for bootstrap)
+AUTOSTART_SCRIPT="/usr/local/bin/docker_autostart.sh"
+# Path to docker-restore CLI
+DOCKER_RESTORE_BIN="/usr/local/bin/docker-restore"
+# Path to onboot systemd unit
+ONBOOT_SERVICE="/etc/systemd/system/docker-restore-onboot.service"
+EOF
+    echo "[INFO] Default config created at $CONFIG_FILE."
+fi
+if [ -r "$CONFIG_FILE" ]; then
+    . "$CONFIG_FILE"
+else
+    echo "[ERROR] Config file not found: $CONFIG_FILE" >&2
+    exit 2
+fi
+
+# --- Create docker-restore-onboot systemd service dynamically using config vars ---
+sudo tee "$ONBOOT_SERVICE" > /dev/null <<EOF
+[Unit]
+Description=Restore Docker containers from backup on boot
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=$DOCKER_RESTORE_BIN -run-restore
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable $(basename "$ONBOOT_SERVICE")
+echo "[INFO] docker-restore-onboot.service created and enabled."
+# --- Automatically enable Docker API over TCP (for fallback) ---
 # --- Automatically enable Docker API over TCP (for fallback) ---
 ENABLE_TCP_SCRIPT="$SCRIPT_SRC/enable_docker_tcp.sh"
 if [ -x "$ENABLE_TCP_SCRIPT" ]; then
@@ -119,14 +190,13 @@ fi
 
 
 # 1b. Symlink docker_backup_restore.sh as docker-restore for CLI backup/restore commands
-RESTORE_LINK="$BIN_DIR/docker-restore"
 BACKUP_RESTORE_SCRIPT_LOCAL="$SCRIPT_SRC/docker_backup_restore.sh"
 if [ -f "$BACKUP_RESTORE_SCRIPT_LOCAL" ]; then
-    if [ -L "$RESTORE_LINK" ] || [ -e "$RESTORE_LINK" ]; then
-        rm -f "$RESTORE_LINK"
+    if [ -L "$DOCKER_RESTORE_BIN" ] || [ -e "$DOCKER_RESTORE_BIN" ]; then
+        rm -f "$DOCKER_RESTORE_BIN"
     fi
-    ln -s "$BACKUP_RESTORE_SCRIPT_LOCAL" "$RESTORE_LINK"
-    echo "[INFO] Symlinked $BACKUP_RESTORE_SCRIPT_LOCAL as $RESTORE_LINK (for docker-restore CLI)"
+    ln -s "$BACKUP_RESTORE_SCRIPT_LOCAL" "$DOCKER_RESTORE_BIN"
+    echo "[INFO] Symlinked $BACKUP_RESTORE_SCRIPT_LOCAL as $DOCKER_RESTORE_BIN (for docker-restore CLI)"
 else
     echo "[WARNING] docker_backup_restore.sh not found in $SCRIPT_SRC, docker-restore CLI will not be available."
 fi
@@ -145,9 +215,11 @@ echo "[INFO] Autoscript directory ensured at $AUTOSCRIPT_DIR"
 
 
 # 4. Ensure systemd unit file exists and has correct ExecStart path
+
+# --- Create main docker-autostart systemd service dynamically using config vars ---
 if [ ! -f "$SYSTEMD_SERVICE" ]; then
     echo "[INFO] Systemd service file not found. Creating $SYSTEMD_SERVICE."
-    cat > "$SYSTEMD_SERVICE" <<EOF
+    sudo tee "$SYSTEMD_SERVICE" > /dev/null <<EOF
 [Unit]
 Description=Docker Autostart - Save and restore running containers
 After=docker.service
@@ -155,19 +227,19 @@ Requires=docker.service
 
 [Service]
 Type=simple
-ExecStart=/bin/bash /usr/local/bin/docker_autostart.sh
-ExecStop=/bin/bash /usr/local/bin/docker_backup_automated.sh
+ExecStart=/bin/bash $BIN_PATH
+ExecStop=/bin/bash $BACKUP_SCRIPT_DST
 Restart=on-failure
 
 [Install]
 WantedBy=multi-user.target
 EOF
 fi
-sed -i 's|ExecStart=.*|ExecStart=/bin/bash /usr/local/bin/docker_autostart.sh|' "$SYSTEMD_SERVICE"
+sudo sed -i "s|ExecStart=.*|ExecStart=/bin/bash $BIN_PATH|" "$SYSTEMD_SERVICE"
 echo "[INFO] Reloading systemd daemon..."
-systemctl daemon-reload
-systemctl enable docker-autostart.service
-systemctl restart docker-autostart.service
+sudo systemctl daemon-reload
+sudo systemctl enable $(basename "$SYSTEMD_SERVICE")
+sudo systemctl restart $(basename "$SYSTEMD_SERVICE")
 echo "[INFO] Systemd service restarted."
 
 echo "[SUCCESS] Deployment complete."
