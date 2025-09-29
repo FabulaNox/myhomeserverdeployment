@@ -23,6 +23,7 @@ LOCKFILE_DST="$BIN_DIR/lockfile.sh"
 SCRIPT_DST="$BIN_DIR/docker_autostart.sh"
 
 
+
 # 1. Copy config, lockfile, main, and backup script to /usr/local/bin
 install -m 644 "$CONFIG_SRC" "$CONFIG_DST"
 echo "[INFO] Config file copied to $CONFIG_DST"
@@ -34,6 +35,14 @@ BACKUP_SCRIPT_SRC="$SCRIPT_SRC/docker_backup_automated.sh"
 BACKUP_SCRIPT_DST="$BIN_DIR/docker_backup_automated.sh"
 install -m 700 "$BACKUP_SCRIPT_SRC" "$BACKUP_SCRIPT_DST"
 echo "[INFO] Backup script copied to $BACKUP_SCRIPT_DST"
+
+# 1b. Symlink docker_autostart.sh as docker-restore for CLI restore commands
+RESTORE_LINK="$BIN_DIR/docker-restore"
+if [ -L "$RESTORE_LINK" ] || [ -e "$RESTORE_LINK" ]; then
+    rm -f "$RESTORE_LINK"
+fi
+ln -s "$SCRIPT_DST" "$RESTORE_LINK"
+echo "[INFO] Symlinked $SCRIPT_DST as $RESTORE_LINK (for docker-restore CLI)"
 
 
 # 2. Ensure all referenced directories exist and are writable
