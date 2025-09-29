@@ -1,3 +1,14 @@
+# Ensure restore_from_json.sh is installed and executable
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RESTORE_JSON_SCRIPT="$SCRIPT_DIR/restore_from_json.sh"
+if [ -f "$RESTORE_JSON_SCRIPT" ]; then
+    chmod +x "$RESTORE_JSON_SCRIPT"
+    cp -f "$RESTORE_JSON_SCRIPT" /usr/local/bin/restore_from_json.sh
+    chmod +x /usr/local/bin/restore_from_json.sh
+    echo "[deploy] Installed restore_from_json.sh to /usr/local/bin."
+else
+    echo "[deploy] WARNING: restore_from_json.sh not found in $SCRIPT_DIR."
+fi
 # --- Create docker-restore-onboot systemd service dynamically ---
 # --- Load config early for all path variables ---
 CONFIG_FILE="$SCRIPT_SRC/docker_autostart.conf"
