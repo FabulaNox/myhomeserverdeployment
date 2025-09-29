@@ -1,6 +1,128 @@
+
+#!/bin/bash
+# Force Bash even if invoked with sh or via sudo
+[ -z "$BASH_VERSION" ] && exec /bin/bash "$0" "$@"
+
+# --- Docker context detection for Desktop/Root compatibility with TCP fallback ---
+# If running as root but Docker Desktop is running as user, use user's Docker context
+# If socket fix fails or no containers found, try Docker API over TCP (localhost:2375)
+detect_docker_context() {
+    # If DOCKER_HOST is set, use it
+    if [ -n "$DOCKER_HOST" ]; then
+        export DOCKER_HOST
+        return
+    fi
+    # Try to detect Docker Desktop socket for user
+    if [ -S "/var/run/docker.sock" ]; then
+        export DOCKER_HOST="unix:///var/run/docker.sock"
+        return
+    fi
+    # Try common Docker Desktop socket for user
+    if [ -n "$SUDO_USER" ]; then
+        USER_DOCKER_SOCK="/run/user/$(id -u $SUDO_USER)/docker.sock"
+        if [ -S "$USER_DOCKER_SOCK" ]; then
+            export DOCKER_HOST="unix://$USER_DOCKER_SOCK"
+            return
+        fi
+    fi
+    # Fallback: no special context
+    unset DOCKER_HOST
+}
+
+detect_docker_context
+
+# --- TCP fallback for Docker API ---
+docker_ps_with_fallback() {
+    local result
+    result=$(docker ps -q)
+    if [ -z "$result" ]; then
+        # Try TCP fallback if enabled
+        export DOCKER_HOST="tcp://localhost:2375"
+        result=$(docker ps -q 2>/dev/null)
+        if [ -n "$result" ]; then
+            echo "[docker-restore] Fallback to Docker API over TCP (localhost:2375) succeeded." >&2
+        else
+            echo "[docker-restore] No containers found via socket or TCP. Is Docker running and API enabled?" >&2
+        fi
+    fi
+    echo "$result"
+}
+
+# --- How to enable Docker API over TCP (for Desktop) ---
+# To enable Docker API over TCP (insecure, for local use only!):
+#   1. Edit or create ~/.docker/daemon.json and add:
+#        { "hosts": ["unix:///var/run/docker.sock", "tcp://0.0.0.0:2375"] }
+#   2. Restart Docker Desktop.
+#   3. Ensure firewall blocks port 2375 from outside localhost.
+#   4. Use only on trusted machines.
+# Ensure config is sourced from the script's directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" )" && pwd)"
+CONFIG_FILE="$SCRIPT_DIR/docker_autostart.conf"
+if [ -r "$CONFIG_FILE" ]; then
+    . "$CONFIG_FILE"
+else
+    echo "[ERROR] Config file not found: $CONFIG_FILE" >&2
+    exit 2
+fi
+
+# --- Save containers function (for backup) ---
+save_containers() {
+    IMAGE_BACKUP_DIR="$AUTOSCRIPT_DIR/image_backups"
+    CONFIG_BACKUP_DIR="$AUTOSCRIPT_DIR/container_configs"
+    JSON_BACKUP_FILE="$AUTOSCRIPT_DIR/container_details.json"
+    mkdir -p "$IMAGE_BACKUP_DIR" "$CONFIG_BACKUP_DIR"
+    echo '[' > "$JSON_BACKUP_FILE"
+    first=1
+    for container in $(docker_ps_with_fallback); do
+        if [[ "$container" =~ ^[a-zA-Z0-9]+$ ]]; then
+            details=$(docker inspect "$container")
+            if [ $first -eq 0 ]; then
+                echo ',' >> "$JSON_BACKUP_FILE"
+            fi
+            echo "$details" | jq '.[0]' >> "$JSON_BACKUP_FILE"
+            first=0
+            image=$(docker inspect --format='{{.Config.Image}}' "$container")
+            name=$(docker inspect --format='{{.Name}}' "$container" | sed 's/\///')
+            if [ -n "$image" ]; then
+                backup_file="$IMAGE_BACKUP_DIR/${name}_${container}.tar"
+                docker save "$image" -o "$backup_file"
+                echo "[$(date)] Saved image $image for container $name ($container) to $backup_file"
+            fi
+        fi
+    done
+    echo ']' >> "$JSON_BACKUP_FILE"
+}
+
+# --- Show backup containers function ---
+show_backup_containers() {
+    local json_file="${JSON_BACKUP_FILE:-/usr/autoscript/container_details.json}"
+    echo "[show-backup-containers] Containers in backup JSON ($json_file):"
+    jq -r '
+      .[] | "- " + .Name + " | image: " + .Config.Image +
+      (if .NetworkSettings.Ports then
+         (" | ports: " + ( [ (.NetworkSettings.Ports | to_entries[] | (.value[0].HostPort + ":" + .key) ) ] | join(", ") ) )
+       else "" end)
+    ' "$json_file"
+    echo
+    local log_file="${RESTORE_LOG:-/usr/autoscript/restore_status.log}"
+    if [ -f "$log_file" ]; then
+        echo "[show-backup-containers] Recent restore log entries ($log_file):"
+        grep -E '\[docker-restore\]|\[OK\]|Reassigning' "$log_file" | tail -20
+    else
+        echo "[show-backup-containers] No restore log found at $log_file"
+    fi
+}
+
+# --- Command-line show backup containers ---
+if [[ "$1" == "-show-backup-containers" ]]; then
+
+    show_backup_containers
+    exit 0
+fi
+    echo "  -show-backup-containers   Show containers saved in backup JSON and recent restore log"
 # --- Full uninstall: remove all traces of deployment ---
 full_uninstall() {
-    echo "[docker-restore -full-uninstall] Removing all deployment traces..."
+    echo "[docker-restore -full-uninstall] Removing all deployment traces (except source .sh files)..."
     # Remove symlink if exists
     if [ -L /usr/local/bin/docker-restore ]; then
         sudo rm /usr/local/bin/docker-restore && echo "Removed symlink /usr/local/bin/docker-restore"
@@ -18,10 +140,6 @@ full_uninstall() {
     if [ -d /usr/autoscript ]; then
         sudo rm -rf /usr/autoscript && echo "Removed /usr/autoscript directory"
     fi
-    # Remove all script files in this directory (use with caution)
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    echo "Removing script files in $SCRIPT_DIR..."
-    find "$SCRIPT_DIR" -type f -name 'docker_*' -exec rm -f {} +
     echo "[docker-restore -full-uninstall] Uninstall complete."
 }
 
@@ -101,6 +219,7 @@ usage() {
 }
 
 # --- Restart a specific container ---
+# --- Save containers function (for backup) ---
 restart_container() {
     local cname="$1"
     if [ -z "$cname" ]; then
@@ -180,6 +299,7 @@ acquire_backup_lock
 trap release_backup_lock EXIT
 
 # --- Command-line run restore (actually start containers) ---
+# --- Restore containers using correct fields from docker inspect JSON ---
 if [[ "$1" == "-run-restore" ]]; then
     echo "[docker-restore -run-restore] Cleaning Docker field before restore..."
     clean_docker_field
@@ -191,11 +311,10 @@ if [[ "$1" == "-run-restore" ]]; then
     count=$(jq length "$JSON_BACKUP_FILE")
     echo "[docker-restore -run-restore] Restoring $count containers/images from backup..."
     for idx in $(seq 0 $((count-1))); do
-        name=$(jq -r ".[$idx].ContainerName" "$JSON_BACKUP_FILE")
-        image=$(jq -r ".[$idx].Image" "$JSON_BACKUP_FILE")
-        status=$(jq -r ".[$idx].LastStatus" "$JSON_BACKUP_FILE")
-        ports=$(jq -r ".[$idx].Ports | keys[]?" "$JSON_BACKUP_FILE")
-        envs=$(jq -r ".[$idx].Env[]?" "$JSON_BACKUP_FILE")
+        name=$(jq -r ".[$idx].Name" "$JSON_BACKUP_FILE" | sed 's#^/##')
+        image=$(jq -r ".[$idx].Config.Image" "$JSON_BACKUP_FILE")
+        ports=$(jq -r ".[$idx].NetworkSettings.Ports | keys[]?" "$JSON_BACKUP_FILE")
+        envs=$(jq -r ".[$idx].Config.Env[]?" "$JSON_BACKUP_FILE")
         # Remove existing container if present
         if docker ps -a --format '{{.Names}}' | grep -q "^$name$"; then
             echo "[docker-restore -run-restore] Removing existing container $name..."
@@ -203,7 +322,8 @@ if [[ "$1" == "-run-restore" ]]; then
         fi
         args=(run -d --name "$name")
         for port in $ports; do
-            host_port=$(jq -r ".[$idx].Ports[\"$port\"][0].HostPort" "$JSON_BACKUP_FILE")
+            host_port=$(jq -r ".[$idx].NetworkSettings.Ports[\"$port\"][0].HostPort" "$JSON_BACKUP_FILE")
+            container_port=$(echo "$port" | cut -d'/' -f1)
             if [ -n "$host_port" ]; then
                 # Check if port is available
                 if ss -tuln | grep -q ":$host_port[[:space:]]" || docker ps --format '{{.Ports}}' | grep -q ":$host_port->"; then
@@ -214,13 +334,13 @@ if [[ "$1" == "-run-restore" ]]; then
                         echo "$msg"
                         echo "$msg" >> /usr/autoscript/restore_status.log
                     else
-                        msg="[docker-restore] Reassigning $name port $port to $new_port (was $host_port)"
+                        msg="[docker-restore] Reassigning $name port $container_port to $new_port (was $host_port)"
                         echo "$msg"
                         echo "$msg" >> /usr/autoscript/restore_status.log
-                        args+=( -p "$new_port:$port" )
+                        args+=( -p "$new_port:$container_port" )
                     fi
                 else
-                    args+=( -p "$host_port:$port" )
+                    args+=( -p "$host_port:$container_port" )
                 fi
             fi
         done
