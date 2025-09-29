@@ -1,43 +1,27 @@
-# Persistent Docker backup JSON
-/usr/autoscript/container_details.json
-# Backup tarballs
-/home/bogdan/project0/myhomeserverdeployment/Server script tools/Docker tools/backup_pre_migration_*.tar.gz
-# .gitignore for myhomeserverdeployment
-# Ignore autoscript state, logs, and lockfiles
-/usr/autoscript/
+# Ignore files and directories generated during testing
 *.log
 *.lock
-
-# ---
-# Checksum hashes for docker_autostart.sh
-# Place your MD5 and SHA256 hashes below for reference
-# MD5: 
-# SHA256: 
-# ---
-# Ignore Docker build/test artifacts
-Dockerfile
-Dockerfile.test
 test_image.tar
 test_container_logs/
 *.testcontainer
 *.testimage
 
-
-# Ignore new backup/config directories
-/usr/autoscript/container_configs/
-/usr/autoscript/image_backups/
-/usr/autoscript/*
-!docker_autostart.conf
-
-# Ignore deployment and cleanup scripts if generated for testing
+# Ignore deployment and cleanup scripts generated for testing
 recover_docker_autostart.sh
 auto_setup_recovery.sh
 
-# Ignore systemd unit files if generated for testing
+# Ignore systemd unit files generated for testing
 docker_autostart_bootstrap.service
 recover-docker-autostart.service
 
-# Add other test files as needed
+# Ignore backup/config directories generated during deployment
+/usr/autoscript/
+/usr/autoscript/container_configs/
+/usr/autoscript/image_backups/
+/usr/autoscript/container_details.json
+
+# Ignore backup tarballs generated during deployment
+/Server script tools/Docker tools/backup_pre_migration_*.tar.gz
 
 # Ignore Go vendor directory
 /vendor/
