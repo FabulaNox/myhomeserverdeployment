@@ -45,13 +45,14 @@ else
     echo "[WARNING] Backup script not found at $BACKUP_SCRIPT_SRC, skipping."
 fi
 
-# 1b. Symlink docker_autostart.sh as docker-restore for CLI restore commands
+# 1b. Symlink docker_backup_restore.sh as docker-restore for CLI backup/restore commands
+BACKUP_RESTORE_SCRIPT="$BIN_DIR/docker_backup_restore.sh"
 RESTORE_LINK="$BIN_DIR/docker-restore"
 if [ -L "$RESTORE_LINK" ] || [ -e "$RESTORE_LINK" ]; then
     rm -f "$RESTORE_LINK"
 fi
-ln -s "$SCRIPT_DST" "$RESTORE_LINK"
-echo "[INFO] Symlinked $SCRIPT_DST as $RESTORE_LINK (for docker-restore CLI)"
+ln -s "$BACKUP_RESTORE_SCRIPT" "$RESTORE_LINK"
+echo "[INFO] Symlinked $BACKUP_RESTORE_SCRIPT as $RESTORE_LINK (for docker-restore CLI)"
 
 
 # 2. Ensure all referenced directories exist and are writable
