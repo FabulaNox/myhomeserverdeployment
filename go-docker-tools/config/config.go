@@ -2,6 +2,7 @@ package config
 
 import (
 	"github.com/spf13/viper"
+	"go-docker-tools/internal"
 )
 
 type Config struct {
@@ -38,7 +39,13 @@ type Config struct {
 
 func LoadConfig() (*Config, error) {
        viper.SetConfigName("saver")
-       viper.AddConfigPath("/etc/docker-state-saver/")
+       // Use platform-aware config directory as default
+       configDir := internal.GetDefaultConfigDir()
+       viper.AddConfigPath(configDir)
+       // Optionally allow override via environment variable
+       if customConfigDir := viper.GetString("CONFIG_DIR"); customConfigDir != "" {
+	       viper.AddConfigPath(customConfigDir)
+       }
        viper.AddConfigPath(".")
        viper.AutomaticEnv()
        _ = viper.ReadInConfig() // ignore error, use defaults if missing
