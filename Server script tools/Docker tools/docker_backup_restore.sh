@@ -260,7 +260,7 @@ fi
 # USAGE NOTE:
 #
 # Due to spaces in the script path, always invoke this script as:
-#   sudo bash 'Server script tools/Docker tools/docker_backup_restore.sh' <command>
+#   sudo bash 'Server script tools/Docker tools/docker_backup_restore.sh' <command>``
 # Or create a symlink or wrapper script in a path without spaces for easier use.
 #
 # Example wrapper (recommended, run once):
