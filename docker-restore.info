@@ -1,3 +1,6 @@
+- `-all-delay XX`            Sequentially backup images from JSON with XX seconds delay (default 5s). If JSON is empty, switch to backup
+- `-backup`                  Backup the current JSON file only
+- `-flush-json`              Create an empty backup JSON and move previous as backup
 # docker-restore.info
 
 This file lists all available user command options for restoring containers/images using the docker-restore system.
