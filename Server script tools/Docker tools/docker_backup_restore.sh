@@ -1,3 +1,15 @@
+# --- Command-line restore from JSON directly ---
+if [[ "$1" == "-json-now" ]]; then
+    RESTORE_JSON_SCRIPT="/usr/local/bin/restore_from_json.sh"
+    if [ -x "$RESTORE_JSON_SCRIPT" ]; then
+        echo "[docker-restore -json-now] Running restore_from_json.sh..."
+        sudo "$RESTORE_JSON_SCRIPT"
+    else
+        echo "[docker-restore -json-now] ERROR: $RESTORE_JSON_SCRIPT not found or not executable." >&2
+        exit 1
+    fi
+    exit 0
+fi
 
 #!/bin/bash
 # Force Bash even if invoked with sh or via sudo
