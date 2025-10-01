@@ -1,3 +1,5 @@
+# Ignore all shell scripts in this branch
+*.sh
 # Ignore files and directories generated during testing
 *.log
 *.lock
