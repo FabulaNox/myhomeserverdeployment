@@ -39,7 +39,14 @@ for idx in $(seq 0 $((count-1))); do
     fi
   done
   echo "[restore-from-json] Running: docker run -d --name $name ${port_args[@]} $image (native Docker)"
-  if ! sudo DOCKER_HOST=unix:///var/run/docker.sock docker run -d --name "$name" "${port_args[@]}" "$image"; then
+  if sudo DOCKER_HOST=unix:///var/run/docker.sock docker run -d --name "$name" "${port_args[@]}" "$image"; then
+    # Automatically update JSON inventory after successful deployment
+    if [ -f "$JSON_FILE" ]; then
+      SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" )" && pwd)"
+      source "$SCRIPT_DIR/docker_backup_restore.sh"
+      add_container_to_json "$name"
+    fi
+  else
     echo "[restore-from-json] ERROR: Failed to start container $name with native Docker. Check Docker service status and logs." >&2
   fi
 done

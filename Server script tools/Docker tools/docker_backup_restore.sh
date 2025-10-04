@@ -1,3 +1,131 @@
+# --- Helper: get active JSON file respecting -no-backup flag ---
+get_active_json_file() {
+    local main_json="${JSON_BACKUP_FILE:-/usr/autoscript/container_details.json}"
+    # If -no-backup is present, always use main JSON
+    for arg in "$@"; do
+        if [[ "$arg" == "-no-backup" ]]; then
+            echo "$main_json"
+            return
+        fi
+    done
+    # If main JSON is empty, use most recent backup
+    if [ ! -s "$main_json" ] || [ "$(jq length "$main_json" 2>/dev/null)" = "0" ]; then
+        recent_backup=$(ls -1t "${main_json}.bak"* 2>/dev/null | head -n1)
+        if [ -n "$recent_backup" ]; then
+            echo "$recent_backup"
+            return
+        fi
+    fi
+    echo "$main_json"
+}
+# --- Command-line sequential image backup with delay ---
+if [[ "$1" == "-all-delay" ]]; then
+    DELAY="${2:-5}"
+    JSON_BACKUP_FILE="$(get_active_json_file "$@")"
+    IMAGE_BACKUP_DIR="${IMAGE_BACKUP_DIR:-/usr/autoscript/image_backups}"
+    if [ ! -f "$JSON_BACKUP_FILE" ]; then
+        echo "[docker-restore -all-delay] No JSON file found at $JSON_BACKUP_FILE. Aborting." >&2
+        exit 1
+    fi
+    count=$(jq length "$JSON_BACKUP_FILE")
+    if [ "$count" -eq 0 ]; then
+        echo "[docker-restore -all-delay] JSON is empty. Switching to backup."
+        "$0" -backup
+        exit 0
+    fi
+    echo "[docker-restore -all-delay] Sequentially backing up $count images with $DELAY seconds delay..."
+    for idx in $(seq 0 $((count-1))); do
+        name=$(jq -r ".[$idx].ContainerName // .[$idx].Name // null" "$JSON_BACKUP_FILE" | sed 's#^/##')
+        id=$(jq -r ".[$idx].Id // null" "$JSON_BACKUP_FILE")
+        image=$(jq -r ".[$idx].Image // .[$idx].Config.Image // null" "$JSON_BACKUP_FILE")
+        backup_file="$IMAGE_BACKUP_DIR/${name}_${id}.tar"
+        if [ -n "$image" ]; then
+            echo "[$(date)] Backing up image $image for container $name ($id) to $backup_file..."
+            docker save "$image" -o "$backup_file"
+            echo "[$(date)] Image $image for $name backed up. Waiting $DELAY seconds..."
+            sleep "$DELAY"
+        else
+            echo "[$(date)] Skipped $name: missing image name."
+        fi
+    done
+    echo "[docker-restore -all-delay] All images backed up."
+    exit 0
+fi
+# --- Command-line backup JSON only ---
+if [[ "$1" == "-backup" ]]; then
+    JSON_BACKUP_FILE="$(get_active_json_file "$@")"
+    if [ -f "$JSON_BACKUP_FILE" ]; then
+        backup_file="${JSON_BACKUP_FILE}.bak.$(date +%s)"
+        cp "$JSON_BACKUP_FILE" "$backup_file"
+        echo "[docker-restore -backup] JSON backed up to $backup_file"
+    else
+        echo "[docker-restore -backup] No JSON file found to backup at $JSON_BACKUP_FILE" >&2
+    fi
+    exit 0
+fi
+# --- Command-line flush JSON: create empty JSON and backup previous ---
+if [[ "$1" == "-flush-json" ]]; then
+    JSON_BACKUP_FILE="$(get_active_json_file "$@")"
+    if [ -f "$JSON_BACKUP_FILE" ]; then
+        backup_file="${JSON_BACKUP_FILE}.bak.$(date +%s)"
+        mv "$JSON_BACKUP_FILE" "$backup_file"
+        echo "[docker-restore -flush-json] Previous JSON moved to $backup_file"
+    fi
+    echo '[]' > "$JSON_BACKUP_FILE"
+    echo "[docker-restore -flush-json] Created empty JSON at $JSON_BACKUP_FILE"
+    exit 0
+fi
+# --- Add new container to JSON and update inventory ---
+add_container_to_json() {
+    local container_id="$1"
+    local json_file="$JSON_BACKUP_FILE"
+    local backup_file="${JSON_BACKUP_FILE}.bak.$(date +%s)"
+    # Save backup
+    cp "$json_file" "$backup_file"
+    echo "[docker-restore] Backup of previous JSON saved as $backup_file"
+    # Get details for all running containers
+    containers_list=$(docker ps -q)
+    echo '[' > "$TMP_JSON_FILE"
+    first=1
+    for container in $containers_list; do
+        if [[ "$container" =~ ^[a-zA-Z0-9]+$ ]]; then
+            details=$(docker inspect "$container")
+            name=$(echo "$details" | jq -r '.[0].Name' | sed 's#^/##')
+            id=$(echo "$details" | jq -r '.[0].Id')
+            image=$(echo "$details" | jq -r '.[0].Config.Image')
+            ports=$(echo "$details" | jq -c '.[0].NetworkSettings.Ports | to_entries | map(select(.value != null) | {container_port: .key, host_port: .value[0].HostPort, protocol: (.key | split("/")[1])})')
+            envs=$(echo "$details" | jq -c '.[0].Config.Env')
+            volumes=$(echo "$details" | jq -c '.[0].Mounts | map({host_path: .Source, container_path: .Destination})')
+            restart_policy=$(echo "$details" | jq -r '.[0].HostConfig.RestartPolicy.Name')
+            network=$(echo "$details" | jq -r '.[0].HostConfig.NetworkMode')
+            if [ $first -eq 0 ]; then
+                echo ',' >> "$TMP_JSON_FILE"
+            fi
+            jq -n --arg name "$name" --arg id "$id" --arg image "$image" --argjson ports "$ports" --argjson envs "$envs" --argjson volumes "$volumes" --arg restart_policy "$restart_policy" --arg network "$network" '{ContainerName: $name, Id: $id, Image: $image, PortDependencies: $ports, Env: $envs, Volumes: $volumes, RestartPolicy: $restart_policy, Network: $network}' >> "$TMP_JSON_FILE"
+            first=0
+        fi
+    done
+    # Validate JSON before moving
+    if jq . "$TMP_JSON_FILE" > /dev/null 2>&1; then
+        mv "$TMP_JSON_FILE" "$json_file"
+        echo "[docker-restore] Updated JSON inventory written atomically."
+    else
+        echo "[docker-restore] ERROR: Updated JSON invalid, not saving corrupted file." >&2
+        rm -f "$TMP_JSON_FILE"
+    fi
+}
+# --- Command-line restore from JSON directly ---
+if [[ "$1" == "-json-now" ]]; then
+    RESTORE_JSON_SCRIPT="/usr/local/bin/restore_from_json.sh"
+    if [ -x "$RESTORE_JSON_SCRIPT" ]; then
+        echo "[docker-restore -json-now] Running restore_from_json.sh..."
+        sudo "$RESTORE_JSON_SCRIPT"
+    else
+        echo "[docker-restore -json-now] ERROR: $RESTORE_JSON_SCRIPT not found or not executable." >&2
+        exit 1
+    fi
+    exit 0
+fi
 
 #!/bin/bash
 # Force Bash even if invoked with sh or via sudo
@@ -93,7 +221,7 @@ fi
 save_containers() {
     IMAGE_BACKUP_DIR="$AUTOSCRIPT_DIR/image_backups"
     CONFIG_BACKUP_DIR="$AUTOSCRIPT_DIR/container_configs"
-    JSON_BACKUP_FILE="$AUTOSCRIPT_DIR/container_details.json"
+    JSON_BACKUP_FILE="$(get_active_json_file "$@")"
     TMP_JSON_FILE="${JSON_BACKUP_FILE}.tmp.$$"
     SOCKET_FIX_SCRIPT="$SCRIPT_DIR/fix_docker_socket.sh"
     mkdir -p "$IMAGE_BACKUP_DIR" "$CONFIG_BACKUP_DIR"
@@ -108,18 +236,19 @@ save_containers() {
         first=1
         for container in $containers_list; do
             if [[ "$container" =~ ^[a-zA-Z0-9]+$ ]]; then
-                # Get details and extract name, id, and port dependencies
                 details=$(docker inspect "$container")
                 name=$(echo "$details" | jq -r '.[0].Name' | sed 's#^/##')
                 id=$(echo "$details" | jq -r '.[0].Id')
                 image=$(echo "$details" | jq -r '.[0].Config.Image')
-                # Collect port dependencies as an array of objects {container_port, host_port, protocol}
                 ports=$(echo "$details" | jq -c '.[0].NetworkSettings.Ports | to_entries | map(select(.value != null) | {container_port: .key, host_port: .value[0].HostPort, protocol: (.key | split("/")[1])})')
-                # Write a custom JSON object for each container
+                envs=$(echo "$details" | jq -c '.[0].Config.Env')
+                volumes=$(echo "$details" | jq -c '.[0].Mounts | map({host_path: .Source, container_path: .Destination})')
+                restart_policy=$(echo "$details" | jq -r '.[0].HostConfig.RestartPolicy.Name')
+                network=$(echo "$details" | jq -r '.[0].HostConfig.NetworkMode')
                 if [ $first -eq 0 ]; then
                     echo ',' >> "$TMP_JSON_FILE"
                 fi
-                jq -n --arg name "$name" --arg id "$id" --arg image "$image" --argjson ports "$ports" '{ContainerName: $name, Id: $id, Image: $image, PortDependencies: $ports}' >> "$TMP_JSON_FILE"
+                jq -n --arg name "$name" --arg id "$id" --arg image "$image" --argjson ports "$ports" --argjson envs "$envs" --argjson volumes "$volumes" --arg restart_policy "$restart_policy" --arg network "$network" '{ContainerName: $name, Id: $id, Image: $image, PortDependencies: $ports, Env: $envs, Volumes: $volumes, RestartPolicy: $restart_policy, Network: $network}' >> "$TMP_JSON_FILE"
                 first=0
                 if [ -n "$image" ]; then
                     backup_file="$IMAGE_BACKUP_DIR/${name}_${container}.tar"
@@ -161,7 +290,7 @@ save_containers() {
 
 # --- Show backup containers function ---
 show_backup_containers() {
-    local json_file="${JSON_BACKUP_FILE:-/usr/autoscript/container_details.json}"
+    local json_file="$(get_active_json_file "$@")"
     echo "[show-backup-containers] Containers in backup JSON ($json_file):"
     jq -r '
       .[] | "- " + .Name + " | image: " + .Config.Image +
@@ -260,7 +389,7 @@ fi
 # USAGE NOTE:
 #
 # Due to spaces in the script path, always invoke this script as:
-#   sudo bash 'Server script tools/Docker tools/docker_backup_restore.sh' <command>
+#   sudo bash 'Server script tools/Docker tools/docker_backup_restore.sh' <command>``
 # Or create a symlink or wrapper script in a path without spaces for easier use.
 #
 # Example wrapper (recommended, run once):
@@ -324,25 +453,31 @@ restart_container() {
 restart_all_containers() {
     echo "Restarting all stopped containers..."
     SOCKET_FIX_SCRIPT="$SCRIPT_DIR/fix_docker_socket.sh"
+    # Step 1: Try Docker Desktop API (default socket)
     try_list_stopped() {
         docker ps -a -q -f status=exited 2>&1
     }
     stopped_ids=$(try_list_stopped)
     if echo "$stopped_ids" | grep -q 'Cannot connect to the Docker daemon'; then
-        # Try to fix the socket
+        # Step 2: Try to fix the socket (Desktop)
         if [ -x "$SOCKET_FIX_SCRIPT" ]; then
             "$SOCKET_FIX_SCRIPT" >/dev/null 2>&1 || true
         fi
         stopped_ids=$(try_list_stopped)
         if echo "$stopped_ids" | grep -q 'Cannot connect to the Docker daemon'; then
-            # Try to start native Docker
-            sudo systemctl start docker || true
+            # Step 3: Check if native Docker is running
+            if ! pgrep dockerd >/dev/null; then
+                echo "[docker-restore] Native Docker not running. Attempting to start..."
+                sudo systemctl start docker || true
+            fi
+            # Step 4: Use native Docker socket for all operations
+            export DOCKER_HOST=unix:///var/run/docker.sock
             stopped_ids=$(try_list_stopped)
             if echo "$stopped_ids" | grep -q 'Cannot connect to the Docker daemon'; then
-                # Final fallback: try restore_from_json.sh
+                # Step 5: Final fallback: deploy containers from backup JSON
                 RESTORE_JSON_SCRIPT="$SCRIPT_DIR/restore_from_json.sh"
                 if [ -x "$RESTORE_JSON_SCRIPT" ]; then
-                    echo "[docker-restore] All restart attempts failed. Attempting full restore from backup JSON..."
+                    echo "[docker-restore] All restart attempts failed. Attempting full restore from backup JSON via native Docker..."
                     sudo "$RESTORE_JSON_SCRIPT"
                 else
                     echo "No stopped containers to restart. Docker daemon not available, and restore_from_json.sh not found or not executable." >&2
@@ -417,7 +552,7 @@ trap release_backup_lock EXIT
 if [[ "$1" == "-run-restore" ]]; then
     echo "[docker-restore -run-restore] Cleaning Docker field before restore..."
     clean_docker_field
-    JSON_BACKUP_FILE="$AUTOSCRIPT_DIR/container_details.json"
+    JSON_BACKUP_FILE="$(get_active_json_file "$@")"
     if [ ! -f "$JSON_BACKUP_FILE" ]; then
         echo "[docker-restore -run-restore] No backup file found at $JSON_BACKUP_FILE" >&2
         exit 1
@@ -525,7 +660,7 @@ fi
 
 # --- Command-line restore preview (dry run) ---
 if [[ "$1" == "-m-restore" ]]; then
-    JSON_BACKUP_FILE="$AUTOSCRIPT_DIR/container_details.json"
+    JSON_BACKUP_FILE="$(get_active_json_file "$@")"
     if [ ! -f "$JSON_BACKUP_FILE" ]; then
         echo "[docker-restore -m-restore] No backup file found at $JSON_BACKUP_FILE" >&2
         exit 1
@@ -578,7 +713,7 @@ fi
 save_containers() {
     IMAGE_BACKUP_DIR="$AUTOSCRIPT_DIR/image_backups"
     CONFIG_BACKUP_DIR="$AUTOSCRIPT_DIR/container_configs"
-    JSON_BACKUP_FILE="$AUTOSCRIPT_DIR/container_details.json"
+    JSON_BACKUP_FILE="$(get_active_json_file "$@")"
     mkdir -p "$IMAGE_BACKUP_DIR" "$CONFIG_BACKUP_DIR"
     docker ps -q > "$CONTAINER_LIST"
     echo '[' > "$JSON_BACKUP_FILE"
