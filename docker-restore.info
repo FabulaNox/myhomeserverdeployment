@@ -1,0 +1,46 @@
+- `-all-delay XX`            Sequentially backup images from JSON with XX seconds delay (default 5s). If JSON is empty, switch to backup
+- `-backup`                  Backup the current JSON file only
+- `-flush-json`              Create an empty backup JSON and move previous as backup
+# docker-restore.info
+
+This file lists all available user command options for restoring containers/images using the docker-restore system.
+
+## Main CLI Options
+
+- `-show-backup-containers`   Show containers saved in backup JSON and recent restore log
+- `-full-uninstall`           Remove all deployment traces: scripts, symlinks, systemd units, autoscript data (CAUTION: destructive)
+- `-clean-field`              Stop/remove all containers, prune networks/volumes (CAUTION: destructive)
+- `-image-capture-no-run`     Capture backup image (no restore)
+- `-run-restore`              Run the restore process (requires stopped autostart service)
+- `-m-restore`                Manual restore preview (dry run, no changes)
+- `-restart-container <name>` Restart a specific container by name or ID
+- `-restart-all`              Restart all stopped containers (with failsafe restore)
+- `-json-now`                 Restore all containers/images from backup JSON immediately
+- `-stop-autostart`           Stop the docker-autostart service
+- `-resume-autostart`         Resume the docker-autostart service
+- `-h, --help`                Show help message
+
+## Failsafe Restore
+If all restart attempts fail, the system will automatically attempt a full restore from backup JSON using native Docker.
+
+## Usage Examples
+
+- Show backup contents:
+  `sudo docker-restore -show-backup-containers`
+
+- Restore all containers:
+  `sudo docker-restore -run-restore`
+
+- Manual restore preview:
+  `sudo docker-restore -m-restore`
+
+- Restart all containers (with failsafe):
+  `sudo docker-restore -restart-all`
+
+- Restore from JSON directly:
+  `sudo docker-restore -json-now`
+
+## Notes
+- All commands require sudo/root privileges.
+- For best results, ensure Docker Desktop or native Docker is running.
+- Backup JSON and image tars must exist in `/usr/autoscript`.
