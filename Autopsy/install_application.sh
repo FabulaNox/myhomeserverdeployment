@@ -18,14 +18,32 @@ if [[ $? -ne 0 ]]; then
 fi
 
 echo "Installing OpenJDK 17 from Bullseye..."
-sudo apt install -y -t bullseye openjdk-17-jdk
+sudo apt install -y -t bullseye openjdk-17-jdk openjdk-17-jre
 if [[ $? -ne 0 ]]; then
-    echo "Failed to install OpenJDK 17" >&2
+    echo "Failed to install OpenJDK 17 packages from Bullseye" >&2
     exit 1
 fi
 
+# Verify Java installation (prefer command checks, fall back to dpkg)
+echo "Verifying OpenJDK 17 installation..."
+if ! command -v java >/dev/null 2>&1 || ! command -v javac >/dev/null 2>&1; then
+    echo "java or javac not found in PATH; checking installed packages..."
+    if ! dpkg -s openjdk-17-jdk >/dev/null 2>&1 || ! dpkg -s openjdk-17-jre >/dev/null 2>&1; then
+        echo "OpenJDK 17 JDK/JRE do not appear to be installed correctly." >&2
+        exit 1
+    fi
+fi
+
+# Remove the temporary Bullseye repository so the system isn't left using it
+echo "Removing temporary Bullseye apt source to avoid pinning system to Bullseye..."
+if [[ -f /etc/apt/sources.list.d/bullseye.list ]]; then
+    sudo rm -f /etc/apt/sources.list.d/bullseye.list
+    # Refresh package lists from the system's configured repositories
+    sudo apt update || echo "Warning: apt update failed after removing bullseye.list; check your apt sources"
+fi
+
 echo "Installing other dependencies..."
-sudo apt install -y build-essential autoconf libtool automake git zip wget ant \
+sudo apt install -y build-essential autoconf libtool automake git zip unzip wget ant \
     libde265-dev libheif-dev libpq-dev \
     testdisk libafflib-dev libewf-dev libvhdi-dev libvmdk-dev libvslvm-dev \
     libgstreamer1.0-0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
@@ -102,12 +120,13 @@ fi
 # Download Autopsy 4.22.1
 echo "Downloading Autopsy 4.22.1..."
 AUTOPSY_URL="https://github.com/sleuthkit/autopsy/releases/download/autopsy-4.22.1/autopsy-4.22.1.zip"
-AUTOPSY_ZIP="autopsy-4.22.1_v2.zip"
+# Use the URL basename as the desired filename so we don't accidentally mismatch names
+AUTOPSY_ZIP=$(basename "$AUTOPSY_URL")
 if [[ ! -f "$AUTOPSY_ZIP" ]]; then
     if command -v curl >/dev/null 2>&1; then
-        curl -L "$AUTOPSY_URL" -o "$AUTOPSY_ZIP"
+        curl -L --retry 5 --retry-delay 5 "$AUTOPSY_URL" -o "$AUTOPSY_ZIP"
     else
-        wget "$AUTOPSY_URL" -O "$AUTOPSY_ZIP"
+        wget --tries=5 --wait=5 -O "$AUTOPSY_ZIP" "$AUTOPSY_URL"
     fi
     if [[ $? -ne 0 ]]; then
         echo "Failed to download Autopsy." >&2
@@ -137,21 +156,40 @@ popd
 # Extract Autopsy
 echo "Extracting Autopsy..."
 mkdir -p "$INSTALL_DIR/autopsy"
-unzip "$AUTOPSY_ZIP" -d "$INSTALL_DIR/autopsy"
+
+# Ensure unzip is available (some minimal Debian installs may not have it)
+if ! command -v unzip >/dev/null 2>&1; then
+    echo "unzip not found, installing unzip..."
+    sudo apt update && sudo apt install -y unzip
+fi
+
+# Test the zip archive before extracting
+if ! unzip -t "$AUTOPSY_ZIP" >/dev/null 2>&1; then
+    echo "Downloaded Autopsy zip appears corrupt or invalid." >&2
+    exit 1
+fi
+
+# Extract, overwriting if necessary
+unzip -o "$AUTOPSY_ZIP" -d "$INSTALL_DIR/autopsy"
 if [[ $? -ne 0 ]]; then
     echo "Failed to extract Autopsy." >&2
     exit 1
 fi
 
-# Find unix_setup.sh and run it
-UNIX_SETUP_PATH=$(find "$INSTALL_DIR/autopsy" -maxdepth 2 -name 'unix_setup.sh' | head -n1 | xargs -I{} dirname {})
+# Find unix_setup.sh and run it (search recursively)
+UNIX_SETUP_PATH=$(find "$INSTALL_DIR/autopsy" -name 'unix_setup.sh' | head -n1 | xargs -I{} dirname {})
 if [[ -z "$UNIX_SETUP_PATH" ]]; then
     echo "Could not find unix_setup.sh in $INSTALL_DIR/autopsy" >&2
     exit 1
 fi
 
 pushd "$UNIX_SETUP_PATH"
-chown -R $(whoami) .
+# Use SUDO_USER if running under sudo so files belong to the real user
+OWNER="$(whoami)"
+if [[ -n "$SUDO_USER" ]]; then
+    OWNER="$SUDO_USER"
+fi
+chown -R "$OWNER" .
 chmod u+x ./unix_setup.sh
 ./unix_setup.sh -j "$JAVA_PATH" -n "$APPLICATION_NAME"
 popd
