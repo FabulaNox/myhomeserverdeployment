@@ -1,13 +1,19 @@
 #!/bin/bash
 # This script installs the Autopsy application on a Linux system.
 
-wget https://github.com/sleuthkit/sleuthkit/releases/download/sleuthkit-4.14.0/sleuthkit-java_4.14.0-1_amd64.deb
-wget https://github.com/sleuthkit/autopsy/releases/download/autopsy-4.22.1/autopsy-4.22.1.zip
+# Download required packages
+wget https://github.com/sleuthkit/sleuthkit/releases/download/sleuthkit-4.14.0/sleuthkit-4.14.0.tar.gz
+wget https://github.com/sleuthkit/autopsy/releases/download/autopsy-4.22.1/autopsy-4.22.1_v2.zip
+
+# Install Java 17 first
+
 echo "deb http://deb.debian.org/debian bullseye main" | sudo tee /etc/apt/sources.list.d/bullseye.list
 sudo apt update
 sudo apt install -t bullseye openjdk-17-jdk openjdk-17-jre -y
-sudo rm /etc/apt/sources.list.d/bullseye.list
-sudo apt update
+update-java-alternatives -l | grep java-1.17
+
+echo "Extracting Sleuth Kit tarball..."
+tar -xzf sleuthkit-4.14.0.tar.gz
 # this script is designed to install necessary dependencies on debian
 # this script requires elevated privileges
 
@@ -18,16 +24,26 @@ if [[ $? -ne 0 ]]; then
     exit 1
 fi
 
+
+echo "Pinning libheif1 to required version for libheif-dev..."
+echo "Package: libheif1" | sudo tee /etc/apt/preferences.d/libheif1
+echo "Pin: version 1.15.1-1+deb12u1" | sudo tee -a /etc/apt/preferences.d/libheif1
+echo "Pin-Priority: 1001" | sudo tee -a /etc/apt/preferences.d/libheif1
+sudo apt update
+sudo apt-get install libheif1=1.15.1-1+deb12u1 -y
 echo "Installing all apt dependencies..."
-sudo apt update && \
-    sudo apt -y install \
-        build-essential autoconf libtool automake git zip wget ant \
-        libde265-dev libheif-dev \
-        libpq-dev \
-        testdisk libafflib-dev libewf-dev libvhdi-dev libvmdk-dev libvslvm-dev \
-        libgstreamer1.0-0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
-        gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-tools gstreamer1.0-x \
-        gstreamer1.0-alsa gstreamer1.0-gl gstreamer1.0-gtk3 gstreamer1.0-qt5 gstreamer1.0-pulseaudio
+sudo apt-get install -y \
+    build-essential autoconf libtool automake git zip wget ant \
+    libde265-dev libheif-dev \
+    libpq-dev \
+    testdisk libafflib-dev libewf-dev libvhdi-dev libvmdk-dev libvslvm-dev \
+    libgstreamer1.0-0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+    gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-tools gstreamer1.0-x \
+    gstreamer1.0-alsa gstreamer1.0-gl gstreamer1.0-gtk3 gstreamer1.0-qt5 gstreamer1.0-pulseaudio
+
+# Remove Bullseye apt source after all dependencies are installed
+sudo rm /etc/apt/sources.list.d/bullseye.list
+sudo apt update
 
 if [[ $? -ne 0 ]]; then
     echo "Failed to install necessary dependencies" >>/dev/stderr
@@ -35,101 +51,56 @@ if [[ $? -ne 0 ]]; then
 fi
 
 echo "Autopsy prerequisites installed."
-echo "Java 17 instllation: "
-update-java-alternatives -l | grep java-1.17
-sudo dpkg -i sleuthkit-java_4.14.0-1_amd64.deb
-sudo apt -f install -y
-# Unzips an application platform zip to specified directory and does setup
 
+# Build and install Sleuth Kit from source
+echo "Building and installing Sleuth Kit..."
+cd sleuthkit-4.14.0
+./bootstrap
+./configure --enable-java
+make
+sudo make install
+cd ..
 usage() {
-    echo "Usage: install_application.sh [-z zip_path] [-i install_directory] [-j java_home] [-n application_name] [-v asc_file]" 1>&2
-    echo "If specifying a .asc verification file (with -v flag), the program will attempt to create a temp folder in the working directory and verify the signature with gpg.  If you already have an extracted zip, the '-z' flag can be ignored as long as the directory specifying the extracted contents is provided for the installation directory." 1>&2
+    echo "Usage: install_application.sh [-z zip_path] [-i install_directory] [-j java_home] [-n application_name]" 1>&2
 }
 
-APPLICATION_NAME="autopsy";
+APPLICATION_NAME="autopsy"
+APPLICATION_ZIP_PATH="${HOME}/Downloads/autopsy-4.22.1_v2.zip"
+INSTALL_DIR="/usr/autopsy"
+JAVA_PATH="/usr/lib/jvm/java-17-openjdk-amd64"
 
-while getopts "n:z:i:j:v:" o; do
+while getopts "n:z:i:j:" o; do
     case "${o}" in
-    n)
-        APPLICATION_NAME=${OPTARG}
-        ;;
-    z)
-        APPLICATION_ZIP_PATH=${OPTARG}
-        ;;
-    i)
-        INSTALL_DIR=${OPTARG}
-        ;;
-    v)
-        ASC_FILE=${OPTARG}
-        ;;
-    j)
-        JAVA_PATH=${OPTARG}
-        ;;
-    *)
-        usage
-        exit 1
-        ;;
+    n) APPLICATION_NAME=${OPTARG} ;;
+    z) APPLICATION_ZIP_PATH=${OPTARG} ;;
+    i) INSTALL_DIR=${OPTARG} ;;
+    j) JAVA_PATH=${OPTARG} ;;
+    *) usage; exit 1 ;;
     esac
 done
 
-if [[ -z "$INSTALL_DIR" ]]; then
-    usage
-    exit 1
-fi
-
-# If zip path has not been specified and there is nothing at the install directory
-if [[ -z "$APPLICATION_ZIP_PATH" ]] && [[ ! -d "$INSTALL_DIR" ]]; then
-    usage
-    exit 1
-fi
-
-# check against the asc file if the zip exists
-if [[ -n "$ASC_FILE" ]] && [[ -n "$APPLICATION_ZIP_PATH" ]]; then
-    VERIFY_DIR=$(pwd)/temp
-    KEY_DIR=$VERIFY_DIR/private
-    mkdir -p $VERIFY_DIR &&
-        sudo wget -O $VERIFY_DIR/carrier.asc https://sleuthkit.org/carrier.asc &&
-        mkdir -p $KEY_DIR &&
-        sudo chmod 600 $KEY_DIR &&
-        sudo gpg --homedir "$KEY_DIR" --import $VERIFY_DIR/carrier.asc &&
-        sudo gpgv --homedir "$KEY_DIR" --keyring "$KEY_DIR/pubring.kbx" $ASC_FILE $APPLICATION_ZIP_PATH &&
-        sudo rm -r $VERIFY_DIR
-    if [[ $? -ne 0 ]]; then
-        echo "Unable to successfully verify $APPLICATION_ZIP_PATH with $ASC_FILE" >>/dev/stderr
-        exit 1
-    fi
-fi
-
-APPLICATION_EXTRACTED_PATH=$INSTALL_DIR/
-
-# if specifying a zip path, ensure directory doesn't exist and then create and extract
-if [[ -n "$APPLICATION_ZIP_PATH" ]]; then
-    if [[ -f $APPLICATION_EXTRACTED_PATH ]]; then
-        echo "A file already exists at $APPLICATION_EXTRACTED_PATH" >>/dev/stderr
-        exit 1
-    fi
-
-    echo "Extracting $APPLICATION_ZIP_PATH to $APPLICATION_EXTRACTED_PATH..."
-    mkdir -p $APPLICATION_EXTRACTED_PATH &&
-        unzip $APPLICATION_ZIP_PATH -d $INSTALL_DIR
-    if [[ $? -ne 0 ]]; then
-        echo "Unable to successfully extract $APPLICATION_ZIP_PATH to $INSTALL_DIR" >>/dev/stderr
-        exit 1
-    fi
-fi 
+# Extract Autopsy zip to install directory
+APPLICATION_EXTRACTED_PATH="$INSTALL_DIR"
+sudo mkdir -p "$APPLICATION_EXTRACTED_PATH"
+sudo unzip "$APPLICATION_ZIP_PATH" -d "$APPLICATION_EXTRACTED_PATH"
 
 echo "Setting up application at $APPLICATION_EXTRACTED_PATH..."
-# find unix_setup.sh in least nested path (https://stackoverflow.com/a/40039568/2375948)
-UNIX_SETUP_PATH=`find $APPLICATION_EXTRACTED_PATH -maxdepth 2 -name 'unix_setup.sh' | head -n1 | xargs -I{} dirname {}`
-
-pushd $UNIX_SETUP_PATH &&
-    chown -R $(whoami) . &&
-    chmod u+x ./unix_setup.sh &&
-    ./unix_setup.sh -j $JAVA_PATH -n $APPLICATION_NAME &&
-    popd
+UNIX_SETUP_PATH=$(find "$APPLICATION_EXTRACTED_PATH" -maxdepth 2 -name 'unix_setup.sh' | head -n1 | xargs -I{} dirname {})
+if [[ -z "$UNIX_SETUP_PATH" ]]; then
+    echo "Could not find unix_setup.sh in $APPLICATION_EXTRACTED_PATH" >>/dev/stderr
+    exit 1
+fi
+pushd "$UNIX_SETUP_PATH"
+chown -R $(whoami) .
+chmod u+x ./unix_setup.sh
+./unix_setup.sh -j "$JAVA_PATH" -n "$APPLICATION_NAME"
+popd
 if [[ $? -ne 0 ]]; then
     echo "Unable to setup permissions for application binaries" >>/dev/stderr
     exit 1
 else
+    # Ensure all files have Unix line endings
+    sudo apt-get install dos2unix -y
+    sudo find /usr/autopsy -type f -exec dos2unix {} +
     echo "Application setup done.  You can run $APPLICATION_NAME from $UNIX_SETUP_PATH/bin/$APPLICATION_NAME."
 fi
