@@ -1,39 +1,39 @@
 #!/bin/bash
 
+# Fail fast and be strict about unset variables
+set -euo pipefail
+# Print a helpful message on error
+trap 'echo "Error on or near line ${LINENO}. Exiting." >&2' ERR
+
 # This script is designed to install necessary dependencies on Debian, Kali, and Parrot OS
 # Requires elevated privileges
 
-echo "Adding Debian Bullseye repository for OpenJDK 17..."
-echo "deb http://deb.debian.org/debian bullseye main" | sudo tee /etc/apt/sources.list.d/bullseye.list
-if [[ $? -ne 0 ]]; then
-    echo "Failed to add Bullseye repository" >&2
-    exit 1
+
+if [[ "$DOWNLOAD_ONLY" != true ]]; then
+    echo "Adding Debian Bullseye repository for OpenJDK 17..."
+    echo "deb http://deb.debian.org/debian bullseye main" | sudo tee /etc/apt/sources.list.d/bullseye.list
+
+    echo "Updating apt package lists..."
+    sudo apt update
+
+    echo "Installing OpenJDK 17 from Bullseye..."
+    sudo apt install -y -t bullseye openjdk-17-jdk openjdk-17-jre
 fi
 
-echo "Updating apt package lists..."
-sudo apt update
-if [[ $? -ne 0 ]]; then
-    echo "Failed to update apt package lists" >&2
-    exit 1
-fi
-
-echo "Installing OpenJDK 17 from Bullseye..."
-sudo apt install -y -t bullseye openjdk-17-jdk
-if [[ $? -ne 0 ]]; then
-    echo "Failed to install OpenJDK 17" >&2
-    exit 1
-fi
-
-echo "Installing other dependencies..."
-sudo apt install -y build-essential autoconf libtool automake git zip wget ant \
-    libde265-dev libheif-dev libpq-dev \
-    testdisk libafflib-dev libewf-dev libvhdi-dev libvmdk-dev libvslvm-dev \
-    libgstreamer1.0-0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
-    gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-tools gstreamer1.0-x \
-    gstreamer1.0-alsa gstreamer1.0-gl gstreamer1.0-gtk3 gstreamer1.0-qt5 gstreamer1.0-pulseaudio
-if [[ $? -ne 0 ]]; then
-    echo "Failed to install other dependencies" >&2
-    exit 1
+if [[ "$DOWNLOAD_ONLY" != true ]]; then
+    echo "Installing other dependencies..."
+    sudo apt install -y build-essential autoconf libtool automake git zip unzip wget ant \
+        libde265-dev libheif-dev libpq-dev \
+        testdisk libafflib-dev libewf-dev libvhdi-dev libvmdk-dev libvslvm-dev \
+        libgstreamer1.0-0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+        gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-tools gstreamer1.0-x \
+        gstreamer1.0-alsa gstreamer1.0-gl gstreamer1.0-gtk3 gstreamer1.0-qt5 gstreamer1.0-pulseaudio
+    if [[ $? -ne 0 ]]; then
+        echo "Failed to install other dependencies" >&2
+        exit 1
+    fi
+else
+    echo "Skipping installation of other dependencies in download-only mode"
 fi
 
 echo "Autopsy prerequisites installed."
@@ -61,15 +61,19 @@ usage() {
 }
 
 APPLICATION_NAME="autopsy";
+DOWNLOAD_ONLY=false
 
 
-while getopts "i:j:" o; do
+while getopts "i:j:d" o; do
     case "${o}" in
     i)
         INSTALL_DIR=${OPTARG}
         ;;
     j)
         JAVA_PATH=${OPTARG}
+        ;;
+    d)
+        DOWNLOAD_ONLY=true
         ;;
     *)
         usage
@@ -80,7 +84,20 @@ done
 
 if [[ -z "$INSTALL_DIR" ]]; then
     usage
-    exit 1
+        if [[ "$DOWNLOAD_ONLY" != true ]]; then
+            # Build Sleuth Kit
+            echo "Building Sleuth Kit..."
+            pushd "$INSTALL_DIR/sleuthkit"
+            ./configure && make && sudo make install
+            if [[ $? -ne 0 ]]; then
+                echo "Failed to build/install Sleuth Kit." >&2
+                exit 1
+            fi
+            popd
+        else
+            echo "Download-only mode: skipping Sleuth Kit build" | tee -a "$LOGFILE"
+        fi
+    echo "Download-only mode: will download and extract, but skip package installs and builds" | tee -a "$LOGFILE"
 fi
 
 # Download Sleuth Kit 4.14.0
