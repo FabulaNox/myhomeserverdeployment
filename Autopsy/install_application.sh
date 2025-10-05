@@ -200,6 +200,23 @@ if [[ "$SKIP_BUILD" -eq 1 ]]; then
         if [[ -n "$PKG_JAR" ]]; then run "sudo cp \"$PKG_JAR\" \"$APPLICATION_INSTALL_DIR/lib/\" || true"; fi
         if [[ -n "$PKG_SO" ]]; then run "sudo cp \"$PKG_SO\" \"$APPLICATION_INSTALL_DIR/lib/\" || true"; fi
     fi
+    # Ensure the JNI shared library is available in the Autopsy lib directory.
+    # Some distributions install libtsk_jni.so under /usr/lib/x86_64-linux-gnu or similar.
+    if [[ ! -f "$APPLICATION_INSTALL_DIR/lib/libtsk_jni.so" ]]; then
+        # Try dpkg listing first (package-installed path)
+        PKG_SO_PATH=$(dpkg -L sleuthkit-java 2>/dev/null | grep -m1 'libtsk_jni.so' || true)
+        if [[ -n "$PKG_SO_PATH" ]]; then
+            run "sudo cp \"$PKG_SO_PATH\" \"$APPLICATION_INSTALL_DIR/lib/\" || true"
+        else
+            # Fallback: common library locations
+            for _p in /usr/lib/x86_64-linux-gnu/libtsk_jni.so /usr/lib/libtsk_jni.so /usr/local/lib/libtsk_jni.so; do
+                if [[ -f "$_p" ]]; then
+                    run "sudo cp \"$_p\" \"$APPLICATION_INSTALL_DIR/lib/\" || true"
+                    break
+                fi
+            done
+        fi
+    fi
 else
     # Copy built artifacts from source build
     if [ -f sleuthkit-4.14.0/bindings/java/jni/dist/tsk_jni.jar ]; then
@@ -277,4 +294,3 @@ fi
     fi
 
     echo "Application setup done.  You can run $APPLICATION_NAME from $UNIX_SETUP_PATH/bin/$APPLICATION_NAME."
-fi
