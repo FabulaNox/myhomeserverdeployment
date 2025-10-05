@@ -728,6 +728,19 @@ fi
         run "sudo ln -s \"$APPLICATION_INSTALL_DIR\" \"$TARGET_LINK\""
     fi
 
+    # Create versioned command wrappers so users can run this specific Autopsy
+    # release without clobbering any distro 'autopsy' command. Create both
+    # hyphenated and compact names.
+    LAUNCHER="$UNIX_SETUP_PATH/bin/autopsy"
+    if [[ -x "$LAUNCHER" ]]; then
+        echo "Creating versioned launcher symlinks for Autopsy 4.22"
+        run "sudo ln -sfn \"$LAUNCHER\" /usr/local/bin/autopsy-4.22 || true"
+        run "sudo ln -sfn \"$LAUNCHER\" /usr/local/bin/autopsy4.22 || true"
+        echo "You can run this installation with: autopsy-4.22 (or autopsy4.22)"
+    else
+        echo "Warning: expected launcher $LAUNCHER not found or not executable; skipping versioned symlink creation"
+    fi
+
     # Finalization: cleanup, recovery, and smoke-check
     # ---------------------------------------------
     # This section performs the final tidy-up and verification after
