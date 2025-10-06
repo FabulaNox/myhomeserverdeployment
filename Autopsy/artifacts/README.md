@@ -69,3 +69,22 @@ If you want, I can:
 - Commit these artifacts using Git LFS and add a short CI-friendly installation note.
 - Make the installer tolerant (non-fatal warnings) or add a `--force` flag.
 
+Wrapper script
+--------------
+If you'd like a small launcher that sets a known Java runtime and library path
+before starting Autopsy 4.22, a wrapper script has been added to the repo at
+`Autopsy/autopsy-4.22-wrapper.sh`.
+
+To install the wrapper system-wide:
+
+```bash
+sudo cp Autopsy/autopsy-4.22-wrapper.sh /usr/local/bin/autopsy-4.22
+sudo chmod +x /usr/local/bin/autopsy-4.22
+```
+
+This will make `autopsy-4.22` available on the PATH and will start the
+installation you created. The wrapper auto-detects the launcher under common
+locations (including `/usr/lib/autopsy-4.22.0`, nested layouts, and `/usr/autopsy`).
+It sets a controlled `JAVA_HOME` and `LD_LIBRARY_PATH`. Edit the wrapper if you
+installed Autopsy to an unusual location or want a different JDK path.
+
