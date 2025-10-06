@@ -205,8 +205,13 @@ or type a full command (for example: bash /path/to/install_application.sh -D /tm
     fi
 fi
 
+# Ensure Bullseye repository is added before updating and installing dependencies
+run "echo \"deb http://deb.debian.org/debian bullseye main\" | sudo tee /etc/apt/sources.list.d/bullseye.list > /dev/null"
+run "if ! grep -q \"deb http://deb.debian.org/debian bullseye main\" /etc/apt/sources.list.d/bullseye.list; then echo \"Failed to add Bullseye apt source\" >&2; exit 1; fi"
 run "sudo apt-get update"
-run "sudo apt-get install -y build-essential autoconf libtool automake git zip wget ant ant-optional openjdk-17-jdk openjdk-17-jre"
+
+# Install prerequisites after switching to Bullseye
+run "sudo apt-get install -y build-essential autoconf libtool automake git zip wget ant ant-optional openjdk-17-jdk openjdk-17-jre default-jdk"
 
 # Download required packages (Sleuth Kit 4.14.0)
 # Use DOWNLOAD_DIR if provided via -D, otherwise default to ~/Downloads
@@ -448,6 +453,25 @@ if [[ "$SKIP_BUILD" -eq 0 ]]; then
     fi
 fi
 
+# Ensure the Sleuth Kit tarball is extracted into the BUILD_DIR
+if [ ! -d "$BUILD_DIR" ]; then
+    echo "$BUILD_DIR does not exist. Extracting Sleuth Kit tarball..."
+    sudo mkdir -p "$BUILD_DIR"
+    sudo chown "$(whoami)" "$BUILD_DIR"
+    if [ -f "$TARBALL_PATH" ]; then
+        tar -xzf "$TARBALL_PATH" -C "$BUILD_DIR" --strip-components=1
+    else
+        echo "Sleuth Kit tarball not found at $TARBALL_PATH. Aborting." >&2
+        exit 1
+    fi
+fi
+
+# Verify BUILD_DIR exists before proceeding
+if [ ! -d "$BUILD_DIR" ]; then
+    echo "$BUILD_DIR directory missing after extraction. Aborting." >&2
+    exit 1
+fi
+
 # If the user explicitly requested no-build and we still don't have artifacts, fail fast
 if [[ "$NO_BUILD" -eq 1 && -z "$TSK_JAR_PATH" && -z "$TSK_SO_PATH" ]]; then
     echo "NO_BUILD set and no JNI artifacts found from .deb or provided artifacts. Failing as requested." >&2
@@ -464,15 +488,6 @@ fi
 
 
 
-# Pin libheif1 to required version for libheif-dev
-echo "Pinning libheif1 to required version for libheif-dev..."
-run "echo \"Package: libheif1\" | sudo tee /etc/apt/preferences.d/libheif1"
-run "echo \"Pin: version 1.15.1-1+deb12u1\" | sudo tee -a /etc/apt/preferences.d/libheif1"
-run "echo \"Pin-Priority: 1001\" | sudo tee -a /etc/apt/preferences.d/libheif1"
-run "sudo apt update"
-run "sudo apt-get install --allow-downgrades libheif1=1.15.1-1+deb12u1 -y"
-
-
 # Install all apt dependencies (including ant for Java builds)
 echo "Installing all apt dependencies..."
 if ! run sudo apt-get install -y \
@@ -487,12 +502,10 @@ if ! run sudo apt-get install -y \
     exit 1
 fi
 
-# Remove Bullseye apt source after all dependencies are installed
-if [ -f /etc/apt/sources.list.d/bullseye.list ]; then
-    run "sudo rm /etc/apt/sources.list.d/bullseye.list"
-    run "sudo apt update"
-fi
+# Remove Bullseye apt source after all dependencies are installed and Sleuth Kit is built
+# Relocate this section to after the Sleuth Kit build
 
+# Existing code for removing Bullseye repository will be moved below.
 echo "Autopsy prerequisites installed."
 
 # Build and install Sleuth Kit from source if we didn't get JNI artifacts from .deb
@@ -502,13 +515,6 @@ if [[ $SKIP_BUILD -eq 0 ]]; then
     # concise apt-get suggestion and fail fast so the user can choose to
     # install packages or provide prebuilt artifacts instead.
     check_build_deps() {
-        MISSING_CMDS=()
-        for c in gcc make autoconf automake libtool pkg-config ant javac unzip; do
-            if ! command -v "$c" >/dev/null 2>&1; then
-                MISSING_CMDS+=("$c")
-            fi
-        done
-
         # Packages that Sleuth Kit commonly needs for full feature set/build
         PKGS=(build-essential autoconf libtool automake git zip wget ant default-jdk libde265-dev libheif-dev libpq-dev testdisk libafflib-dev libewf-dev libvhdi-dev libvmdk-dev libvslvm-dev pkg-config zlib1g-dev)
         MISSING_PKGS=()
@@ -518,14 +524,19 @@ if [[ $SKIP_BUILD -eq 0 ]]; then
             fi
         done
 
-        if [[ ${#MISSING_CMDS[@]} -eq 0 && ${#MISSING_PKGS[@]} -eq 0 ]]; then
+        # Ensure libtool and default-jdk are explicitly included in the build requirements
+        if ! dpkg -s libtool >/dev/null 2>&1; then
+            MISSING_PKGS+=(libtool)
+        fi
+        if ! dpkg -s default-jdk >/dev/null 2>&1; then
+            MISSING_PKGS+=(default-jdk)
+        fi
+
+        if [[ ${#MISSING_PKGS[@]} -eq 0 ]]; then
             return 0
         fi
 
         echo "The system is missing build requirements for building Sleuth Kit:" >&2
-        if [[ ${#MISSING_CMDS[@]} -ne 0 ]]; then
-            echo " - Missing commands: ${MISSING_CMDS[*]}" >&2
-        fi
         if [[ ${#MISSING_PKGS[@]} -ne 0 ]]; then
             echo " - Missing deb packages: ${MISSING_PKGS[*]}" >&2
             echo "You can install them with:" >&2
@@ -870,3 +881,9 @@ fi
     shopt -u nullglob
 
     echo "Application setup done.  You can run $APPLICATION_NAME from $UNIX_SETUP_PATH/bin/$APPLICATION_NAME."
+
+# Remove Bullseye apt source after all dependencies are installed and Sleuth Kit is built
+if [ -f /etc/apt/sources.list.d/bullseye.list ]; then
+    run "sudo rm /etc/apt/sources.list.d/bullseye.list"
+    run "sudo apt update"
+fi
