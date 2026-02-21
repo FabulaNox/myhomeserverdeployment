@@ -1,0 +1,19 @@
+stages:
+  - mirror
+
+mirror-to-github:
+  stage: mirror
+  image: alpine/git:latest
+  when: manual
+  variables:
+    GIT_STRATEGY: clone
+    GIT_DEPTH: 0
+  script:
+    - git config --global user.email "ci@gitlab.local"
+    - git config --global user.name "GitLab Mirror Bot"
+    - git remote add github "https://${GITHUB_USERNAME}:${GITHUB_TOKEN}@github.com/${GITHUB_USERNAME}/${CI_PROJECT_NAME}.git" || git remote set-url github "https://${GITHUB_USERNAME}:${GITHUB_TOKEN}@github.com/${GITHUB_USERNAME}/${CI_PROJECT_NAME}.git"
+    - git push github --mirror
+    - echo "Mirrored ${CI_PROJECT_NAME} to GitHub successfully."
+  only:
+    - branches
+    - tags
